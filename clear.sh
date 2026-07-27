@@ -14,6 +14,11 @@ DB_USER="laravel"
 echo "=========================================================================="
 echo " INICIANDO LIMPIEZA COMPLETA"
 echo "=========================================================================="
+echo " AVISO: este script revierte setup.sh, NO secure.sh."
+echo "   Permanecen activos: puerto SSH custom, firewalld por IP, Fail2ban,"
+echo "   CrowdSec, AIDE, sysctl hardening y /etc/sudoers.d/99-local-path."
+echo "   Para revertir secure.sh, revierte esos cambios manualmente."
+echo "=========================================================================="
 
 echo "=== 1. DETENER Y DESHABILITAR SERVICIOS ==="
 systemctl stop octane 2>/dev/null

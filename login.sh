@@ -55,11 +55,12 @@ echo " [1/9] Actualizando variables en .env..."
 set_env_var() {
     local key=$1
     local value=$2
-    if grep -q "^${key}=" .env; then
-        sed -i "s|^${key}=.*|${key}=\"${value}\"|" .env
-    else
-        echo "${key}=\"${value}\"" >> .env
-    fi
+    # Reescribe la línea sin interpretar value en sed (anti-inyección):
+    # elimina la clave existente y añade el nuevo valor al final.
+    grep -v "^${key}=" .env > .env.tmp || true
+    printf '%s="%s"\n' "$key" "$value" >> .env.tmp
+    mv .env.tmp .env
+    sudo chown "$LARAVEL_USER":"$LARAVEL_USER" .env
 }
 
 set_env_var "APP_URL" "$APP_URL"
@@ -451,7 +452,7 @@ Route::get('/home', function () {
 })->name('home');
 
 Route::get('/login', [SocialiteController::class, 'showLoginForm'])->name('login');
-Route::post('/login', [SocialiteController::class, 'login']);
+Route::post('/login', [SocialiteController::class, 'login'])->middleware('throttle:5,1');
 Route::get('/auth/google/redirect', [SocialiteController::class, 'redirectToGoogle'])->name('google.redirect');
 Route::get('/auth/google/callback', [SocialiteController::class, 'handleGoogleCallback'])->name('google.callback');
 Route::post('/logout', [SocialiteController::class, 'logout'])->name('logout');

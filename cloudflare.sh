@@ -116,6 +116,12 @@ server {
     # Protocolos y Cifrados recomendados
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # HSTS: fuerza HTTPS en el navegador durante 1 año (subdominios incluidos).
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
 
     location / {

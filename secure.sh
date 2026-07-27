@@ -79,6 +79,16 @@ cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
 sed -i "s/^#\?Port.*/Port $SSH_PORT/" /etc/ssh/sshd_config
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/^#\?MaxAuthTries.*/MaxAuthTries 3/' /etc/ssh/sshd_config
+sed -i 's/^#\?LoginGraceTime.*/LoginGraceTime 30/' /etc/ssh/sshd_config
+sed -i 's/^#\?ClientAliveInterval.*/ClientAliveInterval 300/' /etc/ssh/sshd_config
+sed -i 's/^#\?ClientAliveCountMax.*/ClientAliveCountMax 2/' /etc/ssh/sshd_config
+# Restringir login SSH exclusivamente al usuario administrador indicado.
+if ! grep -q "^AllowUsers " /etc/ssh/sshd_config; then
+    echo "AllowUsers $SSH_USER" >> /etc/ssh/sshd_config
+else
+    sed -i "s/^AllowUsers .*/AllowUsers $SSH_USER/" /etc/ssh/sshd_config
+fi
 
 if command -v semanage &>/dev/null; then
     semanage port -a -t ssh_port_t -p tcp "$SSH_PORT" 2>/dev/null || semanage port -m -t ssh_port_t -p tcp "$SSH_PORT" 2>/dev/null || true
