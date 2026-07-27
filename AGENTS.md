@@ -1,0 +1,29 @@
+# AGENTS.md
+
+## Contexto
+Colección de scripts Bash para aprovisionar y bastionar un servidor **AlmaLinux/Rocky 10** remoto (stack Laravel 12 + PHP 8.4 + PostgreSQL 18 + Redis 7 + Filament 4 + Octane/Swoole + Nginx). **Este repo se edita en Windows pero los scripts NUNCA se ejecutan aquí**: se copian al servidor por `scp`/`ssh` (ver `ssh.txt`, comando PowerShell para subir clave pública). No hay tests, CI ni build: verificar sintaxis con `bash -n <script>.sh` antes de dar por bueno un cambio.
+
+## Scripts y orden de ejecución (en el servidor, como root/sudo)
+1. `setup.sh` — instalador completo del stack. Interactivo (prompts). Idempotente por diseño (guardas `|| true`, `if [ ! -d vendor ]`...).
+2. `cloudflare.sh` — dominio + cert Origin Cloudflare + vhost Nginx 443→Octane.
+3. `secure.sh` — hardening (sysctl, SSH puerto custom, firewalld, Fail2ban, CrowdSec, ClamAV, AIDE). **Ejecutar el último**: cambia el puerto SSH y restringe por IP; requiere clave pública ya en `authorized_keys` o pierdes acceso. Instala el comando `sec-logs` en el servidor.
+4. `login.sh` — añade login + Google OAuth a un proyecto Laravel ya desplegado.
+- `clear.sh` — **DESTRUCTIVO**: revierte todo lo de `setup.sh` (borra proyecto, BD, paquetes, repos). Ojo: usa valores hardcodeados (`laravel1`/`laravel`), no los prompts de `setup.sh`.
+
+## Convenciones del repo
+- Comentarios, mensajes y prompts **en español**. Mantener.
+- `set -e` al inicio (excepto `clear.sh`, que usa `set +e` a propósito para limpieza best-effort).
+- Comandos como usuario no-root vía helper `as_laravel()` en `setup.sh`: `sudo -u laravel env HOME=/var/lib/laravel bash -lc "..."`. Composer NUNCA como root ni dentro de `/var/www` (el caché vive en `/var/lib/laravel/.composer`).
+- Parches de código PHP con `php -r` o heredoc PHP, **no `sed`** (comentario explícito en `setup.sh`: escaping de backslashes con sed es frágil).
+- Heredocs: comillas en `'EOF'` cuando el contenido debe ser literal; sin comillas cuando hay que expandir `$VARS` (y escapar `\$` para vars de Laravel/Nginx). Respetar este patrón al editar.
+- Stack target fijo: `dnf`, `systemctl`, `firewalld`, SELinux (`setsebool`/`semanage`/`restorecon`), repos Remi + PGDG. No usar sintaxis apt/Debian.
+
+## Bugs conocidos (verificados, pendientes de fix)
+- `login.sh` ~línea 445: comilla tipográfica `echo “ Reiniciando...` rompe el script (`bash -n` lo detecta).
+- `cloudflare.sh` línea 162: carácter `~` suelto tras el último `echo` (error de sintaxis).
+- `setup.sh`: cabecera dice "Laravel 13" pero la sección 7 dice "LARAVEL 12"; `composer create-project laravel/laravel` instala la última estable — la versión real la manda Composer, no el comentario.
+- `login.sh` línea 116: `cat << 'EOF' > "$MIGRATION_FILE"` usa comillas simples en el heredoc dentro de un script con `set -e` — correcto, no tocar (contenido literal de la migración).
+
+## Seguridad al editar
+- No introducir `chmod 777`, ejecución como root innecesaria ni `PasswordAuthentication yes`.
+- `secure.sh` puede dejar al usuario fuera del servidor: cualquier cambio en la lógica de puerto/firewall/claves debe mantener la validación previa de `authorized_keys`.
