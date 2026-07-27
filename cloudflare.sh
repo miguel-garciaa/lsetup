@@ -6,6 +6,12 @@ set -e
 # CONFIGURACIÓN DOMINIO + CERTIFICADO CLOUDFLARE
 # ==============================================================================
 
+# Escribe en /etc/ssl y /etc/nginx: requiere root (los redirects no usan sudo).
+if [ "$EUID" -ne 0 ]; then
+    echo "Ejecuta este script como root o con sudo."
+    exit 1
+fi
+
 
 echo "=========================================================================="
 echo " CONFIGURACIÓN DE DOMINIO Y CERTIFICADOS SSL CLOUDFLARE"
@@ -159,4 +165,4 @@ echo " ¡PROCESO COMPLETADO CON ÉXITO!"
 echo "=========================================================================="
 echo " Dominio: https://$DOMAIN_NAME"
 echo " Configuración activa en: /etc/nginx/conf.d/${DOMAIN_NAME}.conf"
-echo "=========================================================================="~
+echo "=========================================================================="

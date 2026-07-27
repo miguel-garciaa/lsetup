@@ -185,7 +185,7 @@ fi
 sudo systemctl restart redis
 
 
-echo "=== 7. CREACIÓN DEL PROYECTO LARAVEL 12 ==="
+echo "=== 7. CREACIÓN DEL PROYECTO LARAVEL 13 ==="
 # Limpiar restos de instalaciones previas (dir incompleto o mal permisos).
 # Esto resuelve el "mkdir(): Permission denied" cuando /var/www/laravel1 quedó
 # propiedad de root por una ejecución anterior con sudo composer.

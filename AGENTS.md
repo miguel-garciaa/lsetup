@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Contexto
-Colección de scripts Bash para aprovisionar y bastionar un servidor **AlmaLinux/Rocky 10** remoto (stack Laravel 12 + PHP 8.4 + PostgreSQL 18 + Redis 7 + Filament 4 + Octane/Swoole + Nginx). **Este repo se edita en Windows pero los scripts NUNCA se ejecutan aquí**: se copian al servidor por `scp`/`ssh` (ver `ssh.txt`, comando PowerShell para subir clave pública). No hay tests, CI ni build: verificar sintaxis con `bash -n <script>.sh` antes de dar por bueno un cambio.
+Colección de scripts Bash para aprovisionar y bastionar un servidor **AlmaLinux/Rocky 10** remoto (stack Laravel 13 + PHP 8.4 + PostgreSQL 18 + Redis 7 + Filament 4 + Octane/Swoole + Nginx). **Este repo se edita en Windows pero los scripts NUNCA se ejecutan aquí**: se copian al servidor por `scp`/`ssh` (ver `ssh.txt`, comando PowerShell para subir clave pública). No hay tests, CI ni build: verificar sintaxis con `bash -n <script>.sh` antes de dar por bueno un cambio.
 
 ## Scripts y orden de ejecución (en el servidor, como root/sudo)
 1. `setup.sh` — instalador completo del stack. Interactivo (prompts). Idempotente por diseño (guardas `|| true`, `if [ ! -d vendor ]`...).
@@ -18,11 +18,11 @@ Colección de scripts Bash para aprovisionar y bastionar un servidor **AlmaLinux
 - Heredocs: comillas en `'EOF'` cuando el contenido debe ser literal; sin comillas cuando hay que expandir `$VARS` (y escapar `\$` para vars de Laravel/Nginx). Respetar este patrón al editar.
 - Stack target fijo: `dnf`, `systemctl`, `firewalld`, SELinux (`setsebool`/`semanage`/`restorecon`), repos Remi + PGDG. No usar sintaxis apt/Debian.
 
-## Bugs conocidos (verificados, pendientes de fix)
-- `login.sh` ~línea 445: comilla tipográfica `echo “ Reiniciando...` rompe el script (`bash -n` lo detecta).
-- `cloudflare.sh` línea 162: carácter `~` suelto tras el último `echo` (error de sintaxis).
-- `setup.sh`: cabecera dice "Laravel 13" pero la sección 7 dice "LARAVEL 12"; `composer create-project laravel/laravel` instala la última estable — la versión real la manda Composer, no el comentario.
-- `login.sh` línea 116: `cat << 'EOF' > "$MIGRATION_FILE"` usa comillas simples en el heredoc dentro de un script con `set -e` — correcto, no tocar (contenido literal de la migración).
+## Notas verificadas
+- `login.sh` tiene su propio helper `as_laravel()` (mismo patrón que `setup.sh`) tras el `cd` al proyecto. Todo composer/artisan va por ahí; los archivos generados se hace `chown` a `laravel` antes de migrar.
+- `login.sh`: `cat << 'EOF' > "$MIGRATION_FILE"` usa comillas simples en el heredoc dentro de un script con `set -e` — correcto, no tocar (contenido literal de la migración).
+- `cloudflare.sh` exige root (EUID check): los redirects a `/etc/ssl` no usan `sudo`.
+- `setup.sh`: `.env` lleva `APP_ENV=local`/`APP_DEBUG=true`, pero `octane.service` exporta `APP_ENV=production` (las vars de entorno reales ganan a `.env` en Laravel). Intencionado; no "corregir" sin hablar con el usuario.
 
 ## Seguridad al editar
 - No introducir `chmod 777`, ejecución como root innecesaria ni `PasswordAuthentication yes`.

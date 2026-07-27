@@ -191,6 +191,12 @@ echo -e "\n======================================================="
 EOF
 chmod +x /usr/local/bin/sec-logs
 
+# secure_path por defecto de sudo en RHEL/Alma excluye /usr/local/bin:
+# "sudo sec-logs" daría "command not found". Drop-in para incluirlo.
+echo 'Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/sudoers.d/99-local-path
+chmod 440 /etc/sudoers.d/99-local-path
+visudo -c &>/dev/null || { echo "Error en sintaxis sudoers"; exit 1; }
+
 # ------------------------------------------------------------------------------
 # 9. AIDE (CONTROL DE INTEGRIDAD DE ARCHIVOS)
 # ------------------------------------------------------------------------------

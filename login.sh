@@ -23,6 +23,13 @@ fi
 
 cd "$PROYECTO_DIR"
 
+# Composer/artisan NUNCA como root: mismo patrón que setup.sh (as_laravel).
+LARAVEL_USER="laravel"
+LARAVEL_HOME="/var/lib/laravel"
+as_laravel() {
+    sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" bash -lc "cd '$PROYECTO_DIR' && $*"
+}
+
 # ------------------------------------------------------------------------------
 # 2. CAPTURA DE VARIABLES INTERACTIVAS
 # ------------------------------------------------------------------------------
@@ -88,7 +95,7 @@ echo " [3/9] Verificando paquetes y config/services.php..."
 # Verificar directamente en composer.json si ya está instalado para no ejecutar composer innecesariamente
 if ! grep -q "laravel/socialite" composer.json; then
     echo "📌 Instalando laravel/socialite..."
-    COMPOSER_MEMORY_LIMIT=-1 composer require laravel/socialite --no-interaction --quiet
+    as_laravel "COMPOSER_MEMORY_LIMIT=-1 composer require laravel/socialite --no-interaction --quiet"
 else
     echo "✓ laravel/socialite ya se encuentra instalado."
 fi
@@ -177,6 +184,23 @@ class SocialiteController extends Controller
             return redirect()->route('home');
         }
         return view('auth.login');
+    }
+
+    public function login(Request $request)
+    {
+        $credentials = $request->validate([
+            'email'    => ['required', 'email'],
+            'password' => ['required'],
+        ]);
+
+        if (Auth::attempt($credentials, $request->boolean('remember'))) {
+            $request->session()->regenerate();
+            return redirect()->intended('/home');
+        }
+
+        return back()->withErrors([
+            'email' => 'Las credenciales no coinciden con nuestros registros.',
+        ])->onlyInput('email');
     }
 
     public function redirectToGoogle()
@@ -427,7 +451,7 @@ Route::get('/home', function () {
 })->name('home');
 
 Route::get('/login', [SocialiteController::class, 'showLoginForm'])->name('login');
-Route::post('/login', [SocialiteController::class, 'showLoginForm']);
+Route::post('/login', [SocialiteController::class, 'login']);
 Route::get('/auth/google/redirect', [SocialiteController::class, 'redirectToGoogle'])->name('google.redirect');
 Route::get('/auth/google/callback', [SocialiteController::class, 'handleGoogleCallback'])->name('google.callback');
 Route::post('/logout', [SocialiteController::class, 'logout'])->name('logout');
@@ -438,11 +462,19 @@ EOF
 # ------------------------------------------------------------------------------
 echo " [9/9] Ejecutando migraciones y limpiando caché..."
 
-php artisan migrate --force
-php artisan optimize:clear
+# Archivos creados por este script (controller, vistas, migración) pertenecen
+# al usuario laravel, no a root.
+chown -R "$LARAVEL_USER":"$LARAVEL_USER" \
+    app/Http/Controllers/Auth \
+    resources/views/auth \
+    resources/views/welcome.blade.php \
+    "$MIGRATION_FILE"
+
+as_laravel "php artisan migrate --force"
+as_laravel "php artisan optimize:clear"
 
 if systemctl is-active --quiet octane 2>/dev/null; then
-    echo “ Reiniciando Octane Server..."
+    echo " Reiniciando Octane Server..."
     sudo systemctl restart octane
 fi
 
