@@ -2,7 +2,7 @@
 set -e
 
 # ==============================================================================
-# SCRIPT DE BASTIONADO INTEGRAL Y SECOPS (ALMALINUX 10 + LARAVEL / STACK)
+# SCRIPT DE BASTIONADO INTEGRAL + SECOPS AVANZADO (ALMALINUX 10.2)
 # ==============================================================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -11,17 +11,22 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 echo "=========================================================================="
-echo " 🛡️  INICIANDO DESPLIEGUE INTEGRAL DE SEGURIDAD (ALMALINUX 10)"
+echo " 🛡️  INICIANDO DESPLIEGUE INTEGRAL DE SEGURIDAD Y DEFENSA ACTIVA"
 echo "=========================================================================="
 
 # ------------------------------------------------------------------------------
 # 1. RECOLECCIÓN DE PARÁMETROS
 # ------------------------------------------------------------------------------
-read -rp "1. IP autorizada para conectar por SSH (ej. 192.168.1.100): " ALLOWED_IP
+read -rp "1. IP/CIDR autorizada para conectar por SSH (ej. 192.168.1.100 o 203.0.113.0/24): " ALLOWED_IP
 if [[ -z "$ALLOWED_IP" ]]; then
     echo "Error: La dirección IP no puede estar vacía."
     exit 1
 fi
+if ! [[ "$ALLOWED_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then
+    echo "Error: Formato de IP/CIDR inválido. Usa ej. 192.168.1.100 o 10.0.0.0/24."
+    exit 1
+fi
+echo "   ⚠️  Asegúrate de que esta IP sea ESTÁTICA. Si es dinámica perderás acceso SSH."
 
 read -rp "2. Nuevo PUERTO para SSH (ej. 40400): " SSH_PORT
 if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -le 1024 ] || [ "$SSH_PORT" -gt 65535 ]; then
@@ -38,25 +43,20 @@ fi
 USER_HOME=$(eval echo "~$SSH_USER")
 if [ ! -f "$USER_HOME/.ssh/authorized_keys" ] || [ ! -s "$USER_HOME/.ssh/authorized_keys" ]; then
     echo "⚠️ ALERTA CRÍTICA: El usuario '$SSH_USER' no tiene claves en '$USER_HOME/.ssh/authorized_keys'."
-    echo "Configura tu clave pública SSH antes de continuar para evitar perder el acceso."
     exit 1
 fi
 
 # ------------------------------------------------------------------------------
-# 2. HARDENING DE KERNEL (SYSCTL)
+# 2. HARDENING DE KERNEL, ANTI-NMAP Y ROOTLESS (SYSCTL)
 # ------------------------------------------------------------------------------
-echo ">> [1/8] Aplicando Hardening a nivel de Kernel..."
+echo ">> [1/11] Aplicando Hardening de Kernel y mitigación de OS-Fingerprinting..."
 cat << 'EOF' > /etc/sysctl.d/99-security-hardening.conf
-# Ignorar pings broadcast y bogus
 net.ipv4.icmp_echo_ignore_broadcasts = 1
 net.ipv4.icmp_ignore_bogus_error_responses = 1
-
-# Mitigación de SYN Flood (DDoS TCP)
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_max_syn_backlog = 2048
 net.ipv4.tcp_synack_retries = 2
-
-# Deshabilitar redirecciones e IP Forwarding (Anti-Spoofing / Anti-MITM)
+net.ipv4.tcp_timestamps = 0
 net.ipv4.ip_forward = 0
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
@@ -65,50 +65,108 @@ net.ipv4.conf.default.accept_redirects = 0
 net.ipv4.conf.all.accept_source_route = 0
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.conf.default.rp_filter = 1
-
-# ASLR Activo
 kernel.randomize_va_space = 2
+user.max_user_namespaces = 28633
 EOF
 sysctl --system &>/dev/null
 
 # ------------------------------------------------------------------------------
-# 3. BASTIONADO SSH Y CONFIGURACIÓN DE FIREWALLD
+# 3. BASTIONADO SSH (SIN 2FA — gestionado por 2fa.sh aparte)
 # ------------------------------------------------------------------------------
-echo ">> [2/8] Bastionando SSH y aplicando reglas de Firewalld..."
-cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
-sed -i "s/^#\?Port.*/Port $SSH_PORT/" /etc/ssh/sshd_config
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^#\?MaxAuthTries.*/MaxAuthTries 3/' /etc/ssh/sshd_config
-sed -i 's/^#\?LoginGraceTime.*/LoginGraceTime 30/' /etc/ssh/sshd_config
-sed -i 's/^#\?ClientAliveInterval.*/ClientAliveInterval 300/' /etc/ssh/sshd_config
-sed -i 's/^#\?ClientAliveCountMax.*/ClientAliveCountMax 2/' /etc/ssh/sshd_config
-# Restringir login SSH exclusivamente al usuario administrador indicado.
-if ! grep -q "^AllowUsers " /etc/ssh/sshd_config; then
-    echo "AllowUsers $SSH_USER" >> /etc/ssh/sshd_config
-else
-    sed -i "s/^AllowUsers .*/AllowUsers $SSH_USER/" /etc/ssh/sshd_config
+echo ">> [2/11] Bastionando SSH..."
+dnf install -y epel-release
+
+TS=$(date +%s)
+SSHD_BAK=/etc/ssh/sshd_config.bak.$TS
+PAM_BAK=/etc/pam.d/sshd.bak.$TS
+cp -a /etc/ssh/sshd_config "$SSHD_BAK"
+cp -a /etc/pam.d/sshd "$PAM_BAK"
+
+# Drop-in de hardening (idempotente, sin sed sobre el main config).
+# En RHEL/AlmaLinux 10, sshd_config incluye /etc/ssh/sshd_config.d/*.conf
+# al inicio. sshd usa el PRIMER valor obtenido para cada directiva, por lo que
+# el orden alfabético decide qué drop-in gana. El sistema trae drop-ins como
+# 50-redhat.conf; por eso usamos 00- (se carga primero, gana).
+# Limpiamos versiones viejas y cualquier resto de 2FA de ejecuciones previas.
+rm -f /etc/ssh/sshd_config.d/99-hardening.conf
+# Limpia restos de 2FA si secure.sh anterior la preconfiguró.
+sed -i '/pam_google_authenticator/d' /etc/pam.d/sshd 2>/dev/null || true
+sed -i -E 's/^#\s*(auth\s+substack\s+password-auth)/\1/' /etc/pam.d/sshd 2>/dev/null || true
+
+SSHD_DROPIN=/etc/ssh/sshd_config.d/00-hardening.conf
+cat << EOF > "$SSHD_DROPIN"
+# Hardening generado por secure.sh
+Port $SSH_PORT
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM yes
+PubkeyAuthentication yes
+MaxAuthTries 3
+LoginGraceTime 30
+ClientAliveInterval 300
+ClientAliveCountMax 2
+AllowUsers $SSH_USER
+EOF
+
+# Límite de 2 conexiones SSH simultáneas para $SSH_USER.
+# Se escribe AL FINAL de la sección (tras reiniciar sshd) para no autolimitar
+# la propia instalación. Aquí solo limpiamos archivos previos.
+rm -f /etc/security/limits.d/99-ssh-max.conf
+LIMITS_FILE=/etc/security/limits.d/99-ssh-max.conf
+
+# SELinux: etiquetar el nuevo puerto SSH.
+if command -v semanage &>/dev/null; then
+    semanage port -a -t ssh_port_t -p tcp "$SSH_PORT" 2>/dev/null \
+        || semanage port -m -t ssh_port_t -p tcp "$SSH_PORT" 2>/dev/null || true
 fi
 
-if command -v semanage &>/dev/null; then
-    semanage port -a -t ssh_port_t -p tcp "$SSH_PORT" 2>/dev/null || semanage port -m -t ssh_port_t -p tcp "$SSH_PORT" 2>/dev/null || true
+# Validar sintaxis antes de reiniciar: si falla, restaura backup y aborta
+# (prioridad absoluta: NO dejar el servidor inaccesible).
+if ! sshd -t 2>/tmp/sshd_err; then
+    echo "ERROR: sshd -t falló. NO se reinicia sshd. Detalle:"
+    cat /tmp/sshd_err
+    echo "Restaurando backups de sshd_config y pam.d/sshd..."
+    cp -a "$SSHD_BAK" /etc/ssh/sshd_config
+    rm -f "$SSHD_DROPIN"
+    cp -a "$PAM_BAK" /etc/pam.d/sshd
+    rm -f "$LIMITS_FILE"
+    exit 1
 fi
 systemctl restart sshd
 
+# Ahora sí: aplicar límite de 2 conexiones SSH simultáneas para $SSH_USER.
+# Como AllowUsers restringe a $SSH_USER, nadie más puede abrir sesiones SSH.
+cat << EOF > "$LIMITS_FILE"
+$SSH_USER  hard  maxlogins  2
+EOF
+echo "   >> Límite maxlogins=2 aplicado a '$SSH_USER'."
+echo "   >> 2FA NO incluida aquí. Para activarla: sudo bash 2fa.sh"
+echo "   >> Para desactivarla:  sudo bash 2fa.sh --off"
+
+# ------------------------------------------------------------------------------
+# 4. FIREWALLD: ZONA PUBLIC ESTABLE + ACCESO ESTRICTO
+# ------------------------------------------------------------------------------
+echo ">> [3/11] Configurando reglas de Firewalld..."
+firewall-cmd --set-default-zone=public &>/dev/null || true
 firewall-cmd --permanent --remove-service=ssh &>/dev/null || true
 firewall-cmd --permanent --remove-port=22/tcp &>/dev/null || true
+firewall-cmd --permanent --remove-port="$SSH_PORT"/tcp &>/dev/null || true
 firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='$ALLOWED_IP' port protocol='tcp' port='$SSH_PORT' accept" &>/dev/null || true
 firewall-cmd --reload &>/dev/null
 
 # ------------------------------------------------------------------------------
-# 4. INSTALACIÓN Y CONFIGURACIÓN DE FAIL2BAN
+# 5. INSTALACIÓN Y CONFIGURACIÓN DE FAIL2BAN
 # ------------------------------------------------------------------------------
-echo ">> [3/8] Instalando y configurando Fail2ban..."
+echo ">> [4/11] Configurando Fail2ban..."
 dnf install -y fail2ban fail2ban-systemd
+
+mkdir -p /var/log/nginx
+touch /var/log/nginx/access.log /var/log/nginx/error.log
 
 cat << EOF > /etc/fail2ban/jail.local
 [DEFAULT]
-ignoreip = 127.0.0.1/8 ::1 $ALLOWED_IP
+ignoreip = 127.0.0.1/8 ::1
 bantime  = 86400
 findtime = 600
 maxretry = 3
@@ -129,39 +187,57 @@ EOF
 systemctl enable --now fail2ban
 
 # ------------------------------------------------------------------------------
-# 5. CROWDSEC (INTELIGENCIA DE AMENAZAS EN LA NUBE)
+# 6. CROWDSEC + COLECCIÓN ANTI-PORTSCAN
 # ------------------------------------------------------------------------------
-echo ">> [4/8] Instalando CrowdSec y Firewall Bouncer..."
+echo ">> [5/11] Instalando CrowdSec..."
 curl -s https://install.crowdsec.net | bash &>/dev/null
 dnf install -y crowdsec crowdsec-firewall-bouncer-nftables &>/dev/null || true
 cscli collection install crowdsecurity/nginx &>/dev/null || true
 cscli collection install crowdsecurity/sshd &>/dev/null || true
+cscli collection install crowdsecurity/iptables &>/dev/null || true
 systemctl restart crowdsec || true
 
 # ------------------------------------------------------------------------------
-# 6. CABECERAS DE SEGURIDAD EN NGINX
+# 7. HARDENING NGINX, CLOUDFLARE IPS Y BLOQUEOS /.ENV
 # ------------------------------------------------------------------------------
 if [ -d /etc/nginx/conf.d ]; then
-    echo ">> [5/8] Inyectando cabeceras de seguridad en Nginx..."
+    echo ">> [6/11] Configurando Nginx con soporte Cloudflare y Hardening..."
+    
+    echo "real_ip_header CF-Connecting-IP;" > /etc/nginx/conf.d/cloudflare.conf
+    curl -s https://www.cloudflare.com/ips-v4 | while read ip; do
+        echo "set_real_ip_from $ip;" >> /etc/nginx/conf.d/cloudflare.conf
+    done || true
+    curl -s https://www.cloudflare.com/ips-v6 | while read ip; do
+        echo "set_real_ip_from $ip;" >> /etc/nginx/conf.d/cloudflare.conf
+    done || true
+
     cat << 'EOF' > /etc/nginx/conf.d/99-security-headers.conf
 add_header X-Frame-Options "SAMEORIGIN" always;
 add_header X-Content-Type-Options "nosniff" always;
 add_header X-XSS-Protection "1; mode=block" always;
 add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 server_tokens off;
+
+location ~ /\.(env|git|htaccess|aws|ssh|config) {
+    deny all;
+    return 404;
+}
 EOF
     systemctl reload nginx 2>/dev/null || true
 fi
 
 # ------------------------------------------------------------------------------
-# 7. ANTIMALWARE, RKHUNTER Y FIX DE PERMISOS CLAMAV
+# 8. ANTIMALWARE, RKHUNTER Y CLAMAV
 # ------------------------------------------------------------------------------
-echo ">> [6/8] Instalando escáneres de Malware y corrigiendo permisos ClamAV..."
-dnf install -y epel-release
-# ClamAV 1.4.5 (versión fijada). EPEL EL10 provee 1.4.5-1.el10_3.
-dnf install -y rkhunter clamav-1.4.5 clamav-update-1.4.5
+echo ">> [7/11] Instalando ClamAV y Rkhunter..."
+# EPEL 10.2 stable trae ClamAV 1.4.x; no fijar versión exacta (1.4.5 puede no existir).
+# --enablerepo=epel-testing solo para este comando (no habilita el repo permanentemente).
+dnf install -y rkhunter || true
+if ! dnf install -y --enablerepo=epel-testing clamav clamav-update clamd &>/dev/null; then
+    echo "AVISO: epel-testing no disponible o falla; instalando ClamAV estable de EPEL."
+    dnf install -y clamav clamav-update clamd
+fi
 
-# Solución explícita al error de permisos en AlmaLinux 10
 mkdir -p /var/lib/clamav
 if id "clamupdate" &>/dev/null; then
     chown -R clamupdate:clamupdate /var/lib/clamav
@@ -171,12 +247,19 @@ fi
 chmod 755 /var/lib/clamav
 
 freshclam || true
+systemctl enable --now clamav-freshclam 2>/dev/null || true
 rkhunter --propupd || true
 
 # ------------------------------------------------------------------------------
-# 8. COMANDO DASHBOARD 'sec-logs'
+# 9. PERSISTENCIA PARA CONTENEDORES ROOTLESS
 # ------------------------------------------------------------------------------
-echo ">> [7/8] Creando comando de auditoría 'sec-logs'..."
+echo ">> [8/11] Configurando persistencia Linger para el usuario $SSH_USER..."
+loginctl enable-linger "$SSH_USER" || true
+
+# ------------------------------------------------------------------------------
+# 10. AUDITORÍA 'sec-logs' + CONFIGURACIÓN DE PATH EN SUDOERS
+# ------------------------------------------------------------------------------
+echo ">> [9/11] Configurando panel de auditoría 'sec-logs'..."
 cat << 'EOF' > /usr/local/bin/sec-logs
 #!/bin/bash
 echo -e "\n======================================================="
@@ -193,25 +276,20 @@ echo -e "\n\e[1;31m[+] ÚLTIMOS INTENTOS FALLIDOS DE SSH\e[0m"
 journalctl -u sshd --since "1 day ago" | grep -i "failed" | tail -n 5 || echo "Sin intentos fallidos recientes."
 
 echo -e "\n\e[1;31m[+] ERRORES CRÍTICOS EN NGINX (ÚLTIMAS 10 LÍNEAS)\e[0m"
-tail -n 10 /var/log/nginx/error.log 2>/dev/null || echo "Sin errores o log inaccesible."
-
-echo -e "\n\e[1;34m[+] USO DE RECURSOS (TOP 5 PROCESOS POR CPU)\e[0m"
-ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%cpu | head -n 6
+grep "\[error\]" /var/log/nginx/error.log | tail -n 10 || echo "Sin errores o log inaccesible."
 
 echo -e "\n======================================================="
 EOF
 chmod +x /usr/local/bin/sec-logs
 
-# secure_path por defecto de sudo en RHEL/Alma excluye /usr/local/bin:
-# "sudo sec-logs" daría "command not found". Drop-in para incluirlo.
 echo 'Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/sudoers.d/99-local-path
 chmod 440 /etc/sudoers.d/99-local-path
 visudo -c &>/dev/null || { echo "Error en sintaxis sudoers"; exit 1; }
 
 # ------------------------------------------------------------------------------
-# 9. AIDE (CONTROL DE INTEGRIDAD DE ARCHIVOS)
+# 11. AIDE (CONTROL DE INTEGRIDAD DE ARCHIVOS)
 # ------------------------------------------------------------------------------
-echo ">> [8/8] Instalando e inicializando AIDE..."
+echo ">> [10/11] Inicializando base de datos de integridad AIDE..."
 dnf install -y aide
 aide --init || true
 if [ -f /var/lib/aide/aide.db.new.gz ]; then
@@ -222,13 +300,16 @@ fi
 # RESUMEN FINAL
 # ------------------------------------------------------------------------------
 echo "=========================================================================="
-echo " 🚀 BASTIONADO Y DEFENSA EN PROFUNDIDAD COMPLETADA CON ÉXITO"
+echo " 🚀 BASTIONADO Y DEFENSA EN PROFUNDIDAD COMPLETADOS CON ÉXITO"
 echo "=========================================================================="
 echo " - Puerto SSH nuevo:        $SSH_PORT"
 echo " - IP permitida SSH:        $ALLOWED_IP"
-echo " - Kernel Hardening:        APLICADO (sysctl)"
+echo " - Firewalld:               ZONA PUBLIC + REGLA ESTRICTA APLICADA"
+echo " - Cloudflare & Nginx:      IPS REALES RESTAURADAS + BLOQUEO /.ENV"
 echo " - Fail2ban + CrowdSec:     ACTIVOS Y MONITOREANDO"
-echo " - Antimalware / Integrity: RKHUNTER + CLAMAV + AIDE LISTOS"
+echo " - 2FA SSH:                 NO (gestionada por 2fa.sh aparte)"
 echo "=========================================================================="
-echo " Monitoriza todo en cualquier momento con el comando: sudo sec-logs"
+echo " Monitoriza todo con: sudo sec-logs"
+echo " 2FA: sudo bash 2fa.sh        (activar)"
+echo "      sudo bash 2fa.sh --off  (desactivar)"
 echo "=========================================================================="
