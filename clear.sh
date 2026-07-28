@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# SCRIPT DE LIMPIEZA — revierte todo lo instalado por laravel-installer.sh
+# SCRIPT DE LIMPIEZA — revierte todo lo instalado por setup.sh
 # Compatible AlmaLinux / Rocky Linux 10
 # Ejecutar como root o con sudo.
 # ==============================================================================

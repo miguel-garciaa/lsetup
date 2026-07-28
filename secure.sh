@@ -158,7 +158,8 @@ fi
 # ------------------------------------------------------------------------------
 echo ">> [6/8] Instalando escáneres de Malware y corrigiendo permisos ClamAV..."
 dnf install -y epel-release
-dnf install -y rkhunter clamav clamav-update
+# ClamAV 1.4.5 (versión fijada). EPEL EL10 provee 1.4.5-1.el10_3.
+dnf install -y rkhunter clamav-1.4.5 clamav-update-1.4.5
 
 # Solución explícita al error de permisos en AlmaLinux 10
 mkdir -p /var/lib/clamav

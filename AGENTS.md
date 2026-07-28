@@ -1,13 +1,14 @@
 # AGENTS.md
 
 ## Contexto
-Colección de scripts Bash para aprovisionar y bastionar un servidor **AlmaLinux/Rocky 10** remoto (stack Laravel 13 + PHP 8.4 + PostgreSQL 18 + Redis 7 + Filament 5 + Octane/FrankenPHP + Nginx). **Este repo se edita en Windows pero los scripts NUNCA se ejecutan aquí**: se copian al servidor por `scp`/`ssh` (ver `ssh.txt`, comando PowerShell para subir clave pública). No hay tests, CI ni build: verificar sintaxis con `bash -n <script>.sh` antes de dar por bueno un cambio.
+Colección de scripts Bash para aprovisionar y bastionar un servidor **AlmaLinux/Rocky 10** remoto (stack Laravel 13 + PHP 8.4 + PostgreSQL 18 + Redis 8 + Filament 5 + Octane/FrankenPHP + Nginx). **Este repo se edita en Windows pero los scripts NUNCA se ejecutan aquí**: se copian al servidor por `scp`/`ssh` (ver `ssh.txt`, comando PowerShell para subir clave pública). No hay tests, CI ni build: verificar sintaxis con `bash -n <script>.sh` antes de dar por bueno un cambio.
 
 ## Scripts y orden de ejecución (en el servidor, como root/sudo)
-1. `setup.sh` — instalador completo del stack. Interactivo (prompts). Idempotente por diseño (guardas `|| true`, `if [ ! -d vendor ]`...).
-2. `cloudflare.sh` — dominio + cert Origin Cloudflare + vhost Nginx 443→Octane.
-3. `secure.sh` — hardening (sysctl, SSH puerto custom, firewalld, Fail2ban, CrowdSec, ClamAV, AIDE). **Ejecutar el último**: cambia el puerto SSH y restringe por IP; requiere clave pública ya en `authorized_keys` o pierdes acceso. Instala el comando `sec-logs` en el servidor.
-4. `login.sh` — añade login + Google OAuth a un proyecto Laravel ya desplegado.
+1. `setup.sh` — instalador del stack base (sistema, PG18, PHP 8.4, Redis 8, Laravel 13, Octane/FrankenPHP, Nginx). Interactivo (prompts). Idempotente por diseño (guardas `|| true`, `if [ ! -d vendor ]`...). **Ya NO instala Filament ni crea el admin** (va en `panel.sh`).
+2. `panel.sh` — instala Filament 5 + Shield + Spatie Media Library + crea el usuario admin. A ejecutar tras `setup.sh`. Pide credenciales de admin.
+3. `cloudflare.sh` — dominio + cert Origin Cloudflare + vhost Nginx 443→Octane.
+4. `secure.sh` — hardening (sysctl, SSH puerto custom, firewalld, Fail2ban, CrowdSec, ClamAV 1.4.5, AIDE). **Ejecutar el último**: cambia el puerto SSH y restringe por IP; requiere clave pública ya en `authorized_keys` o pierdes acceso. Instala el comando `sec-logs` en el servidor.
+5. `login.sh` — añade login + Google OAuth a un proyecto Laravel ya desplegado.
 - `clear.sh` — **DESTRUCTIVO**: revierte todo lo de `setup.sh` (borra proyecto, BD, paquetes, repos). Ojo: usa valores hardcodeados (`laravel1`/`laravel`), no los prompts de `setup.sh`.
 
 ## Convenciones del repo
@@ -20,6 +21,7 @@ Colección de scripts Bash para aprovisionar y bastionar un servidor **AlmaLinux
 
 ## Notas verificadas
 - `login.sh` tiene su propio helper `as_laravel()` (mismo patrón que `setup.sh`) tras el `cd` al proyecto. Todo composer/artisan va por ahí; los archivos generados se hace `chown` a `laravel` antes de migrar.
+- `panel.sh` replica el helper `as_laravel()` (mismo patrón). Tras `filament:install --panels`, parchea `AdminPanelProvider.php` con `->login()` (vía heredoc PHP): sin ello, `/admin` redirige a la ruta genérica `login` inexistente → `RouteNotFoundException`. No usar `sed` para el parche.
 - `login.sh`: `cat << 'EOF' > "$MIGRATION_FILE"` usa comillas simples en el heredoc dentro de un script con `set -e` — correcto, no tocar (contenido literal de la migración).
 - `cloudflare.sh` exige root (EUID check): los redirects a `/etc/ssl` no usan `sudo`.
 - `setup.sh`: `.env` lleva `APP_ENV=local`/`APP_DEBUG=false`, pero `octane.service` exporta `APP_ENV=production` (las vars de entorno reales ganan a `.env` en Laravel). Intencionado; no "corregir" sin hablar con el usuario.
