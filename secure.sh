@@ -211,19 +211,41 @@ if [ -d /etc/nginx/conf.d ]; then
         echo "set_real_ip_from $ip;" >> /etc/nginx/conf.d/cloudflare.conf
     done || true
 
+    # Cabeceras de seguridad a nivel http (heredan salvo donde haya add_header
+    # propio, p.ej. en location / del vhost). server_tokens off global.
     cat << 'EOF' > /etc/nginx/conf.d/99-security-headers.conf
 add_header X-Frame-Options "SAMEORIGIN" always;
 add_header X-Content-Type-Options "nosniff" always;
 add_header X-XSS-Protection "1; mode=block" always;
 add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 server_tokens off;
+EOF
 
+    # El bloque 'location' NO es válido a nivel http (conf.d se incluye dentro
+    # de http {}). Va en un snippet e se inyecta dentro de cada server {} de los
+    # vhosts existentes (laravel.conf, 443 de cloudflare.sh...). Idempotente.
+    mkdir -p /etc/nginx/snippets
+    cat << 'EOF' > /etc/nginx/snippets/dotfiles-block.conf
 location ~ /\.(env|git|htaccess|aws|ssh|config) {
     deny all;
     return 404;
 }
 EOF
-    systemctl reload nginx 2>/dev/null || true
+    for f in /etc/nginx/conf.d/*.conf; do
+        [ -f "$f" ] || continue
+        case "$f" in *99-security-headers*) continue;; esac
+        grep -q "snippets/dotfiles-block.conf" "$f" 2>/dev/null && continue
+        sed -i -E '0,/^server[[:space:]]*\{/{s|^server[[:space:]]*\{|server {\n    include /etc/nginx/snippets/dotfiles-block.conf;|}' "$f"
+    done
+
+    # Validar config antes de recargar: si falla, avisar (NO abortar todo el
+    # script, pero el site quedará caído hasta corregir).
+    if ! nginx -t 2>/tmp/nginx_err; then
+        echo "   ⚠️  AVISO: nginx -t falló. Detalle:"
+        cat /tmp/nginx_err
+    else
+        systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+    fi
 fi
 
 # ------------------------------------------------------------------------------
