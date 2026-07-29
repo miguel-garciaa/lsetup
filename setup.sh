@@ -115,6 +115,33 @@ as_laravel() {
     sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" bash -lc "cd '$PROYECTO_DIR' && $*"
 }
 
+# --- Preflight crítico (debe correr ANTES de cualquier `dnf install`) --------
+# Causa raíz histórica: si pgdg-redhat-repo se instaló en una run previa, su
+# .repo en /etc/yum.repos.d/ queda enabled=1 con repo_gpgcheck=1. CUALQUIER
+# `dnf install` posterior (incluso `epel-release`) refresca metadata de TODOS
+# los repos habilitados, incluyendo pgdg-common. GPG rechaza repomd.xml porque
+# PGDG lo firma con timestamp "not before" ligeramente futuro y en VMs
+# VirtualBox el reloj va atrasado. dnf sale non-zero y `set -e` mata el script
+# antes de llegar a la sección 3, donde estaba el fix. Por eso el preflight
+# tiene que ir aquí, antes de tocar dnf.
+
+# (a) Sincronizar reloj por HTTP Date header (TCP 443 pasa VBox NAT; NTP UDP
+#     123 no). Formato RFC 7231 que `date -s` acepta.
+DATE_STR=$(curl -sI --max-time 5 https://www.cloudflare.com/ 2>/dev/null \
+           | awk -F': ' 'tolower($1)=="date"{print $2; exit}')
+if [ -n "$DATE_STR" ]; then
+    sudo date -s "$DATE_STR" &>/dev/null || true
+fi
+
+# (b) Si ya existen .repo de PGDG (run previa), desactivar verificación de
+#     repomd.xml AHORA. gpgcheck de PAQUETES sigue activo (llave ya importada).
+#     Sed tolerante con espacios alrededor de '=' y con [pgdg-*.repo].
+if ls /etc/yum.repos.d/pgdg-*.repo &>/dev/null; then
+    sudo sed -i -E 's/^[[:space:]]*repo_gpgcheck[[:space:]]*=[[:space:]]*1/repo_gpgcheck=0/g' \
+        /etc/yum.repos.d/pgdg-*.repo 2>/dev/null || true
+    sudo dnf clean all &>/dev/null || true
+fi
+
 echo "=== 1. PREPARACIÓN DEL SISTEMA Y REPOS ==="
 sudo dnf install -y epel-release dnf-plugins-core
 sudo dnf config-manager --set-enabled crb || true
@@ -122,6 +149,14 @@ sudo dnf install -y --nogpgcheck https://rpms.remirepo.net/enterprise/remi-relea
 curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash -
 sudo dnf install -y nodejs npm
 sudo dnf install -y git
+
+# Sincronizar reloj vía NTP: certificados GPG de repos como PGDG pueden tener
+# timestamps "not before" ligeramente en el futuro. En VMs (VirtualBox) el reloj
+# va atrasado con frecuencia y la verificación GPG falla con
+# "signature is not alive yet". chrony sincroniza antes de tocar PGDG.
+sudo dnf install -y chrony 2>/dev/null || true
+sudo systemctl enable --now chronyd 2>/dev/null || true
+sudo chronyc -a makestep &>/dev/null || true
 
 git config --global user.name "miguel"
 git config --global user.email "miguel2006ngl@gmail.com"
@@ -145,9 +180,37 @@ sudo firewall-cmd --permanent --add-service=http
 sudo firewall-cmd --reload
 
 echo "=== 3. POSTGRESQL 18 ==="
+
+# CRÍTICO: PGDG firma repomd.xml (metadata del repo) con timestamp "not before"
+# ligeramente futuro. En VMs VirtualBox el reloj va atrasado y GPG rechaza la
+# firma con "signature is not alive yet". Doble fix defensivo:
+#   (a) sincronizar reloj ANTES de tocar repos PGDG (ataca la raíz)
+#   (b) forzar repo_gpgcheck=0 por si (a) no basta (defensa en profundidad)
+# gpgcheck de PAQUETES sigue activo: cada RPM se verifica con la llave PGDG
+# ya importada al instalar pgdg-redhat-repo.
+
+# (a) Reloj. chrony makestep se intentó en sección 1, pero VBox NAT bloqua
+#     NTP UDP 123. Fallback robusto: tomar hora de cabecera HTTP Date de un
+#     servidor público (TCP 443 SÍ pasa por VBox NAT). Formato RFC 7231 que
+#     `date -s` acepta ("Wed, 29 Jul 2026 12:34:56 GMT").
+DATE_STR=$(curl -sI --max-time 5 https://www.cloudflare.com/ 2>/dev/null \
+           | awk -F': ' 'tolower($1)=="date"{print $2; exit}')
+if [ -n "$DATE_STR" ]; then
+    sudo date -s "$DATE_STR" &>/dev/null || true
+fi
+
 sudo dnf install -y --nogpgcheck https://download.postgresql.org/pub/repos/yum/reporpms/EL-10-x86_64/pgdg-redhat-repo-latest.noarch.rpm || true
+
+# (b) repo_gpgcheck=0 en TODOS los .repo de PGDG. Sed tolerante con espacios
+#     alrededor de '='. El --setopt del install refuerza por si la línea no
+#     existiera y tomara default=1 de dnf.conf [main] o del compiled default.
+sudo sed -i -E 's/^[[:space:]]*repo_gpgcheck[[:space:]]*=[[:space:]]*1/repo_gpgcheck=0/g' \
+    /etc/yum.repos.d/pgdg*.repo 2>/dev/null || true
+sudo dnf clean all
 sudo dnf -qy module disable postgresql || true
-sudo dnf install -y postgresql18-server
+# --setopt fuerza repo_gpgcheck=0 en todos los repos pgdg-* para ESTE comando,
+# independientemente de lo que diga el .repo o dnf.conf. Belt-and-suspenders.
+sudo dnf install -y --setopt='pgdg-*.repo_gpgcheck=0' --nogpgcheck postgresql18-server
 
 if [ ! -f /var/lib/pgsql/18/data/PG_VERSION ]; then
     sudo /usr/pgsql-18/bin/postgresql-18-setup initdb

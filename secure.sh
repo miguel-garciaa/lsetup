@@ -135,12 +135,12 @@ if ! sshd -t 2>/tmp/sshd_err; then
 fi
 systemctl restart sshd
 
-# Ahora sí: aplicar límite de 2 conexiones SSH simultáneas para $SSH_USER.
+# Ahora sí: aplicar límite de 3 conexiones SSH simultáneas para $SSH_USER.
 # Como AllowUsers restringe a $SSH_USER, nadie más puede abrir sesiones SSH.
 cat << EOF > "$LIMITS_FILE"
-$SSH_USER  hard  maxlogins  2
+$SSH_USER  hard  maxlogins  3
 EOF
-echo "   >> Límite maxlogins=2 aplicado a '$SSH_USER'."
+echo "   >> Límite maxlogins=3 aplicado a '$SSH_USER'."
 echo "   >> 2FA NO incluida aquí. Para activarla: sudo bash 2fa.sh"
 echo "   >> Para desactivarla:  sudo bash 2fa.sh --off"
 
