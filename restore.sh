@@ -14,6 +14,8 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/pgsql-18/bin:$PATH"
+
 CONF=/etc/backup.conf
 if [ ! -f "$CONF" ]; then
     echo "❌ Falta $CONF. Ejecuta: sudo bash backup-install.sh" >&2
@@ -152,27 +154,45 @@ if [ "$RESTORE_DB" = "1" ]; then
     SRC="$TIER_DIR/state-$TAG.db"
 
     # Creds DB actuales de .env (puede que el user/pass cambie respecto snapshot).
+    read_env() {
+        awk -F= -v k="$1" '
+            {
+                key = $1;
+                sub(/^[ \t]+/, "", key);
+                sub(/[ \t]+$/, "", key);
+                if (key == k && NF >= 2) {
+                    val = substr($0, index($0, "=") + 1);
+                    sub(/^[ \t]+/, "", val);
+                    sub(/[ \t]+$/, "", val);
+                    sub(/^["'\'']/, "", val);
+                    sub(/["'\'']$/, "", val);
+                    print val;
+                    exit;
+                }
+            }
+        ' "$LARAVEL_DIR/.env"
+    }
     if [ -n "$LARAVEL_DIR" ] && [ -f "$LARAVEL_DIR/.env" ]; then
-        DB_NAME=$(awk -F= '$1=="DB_DATABASE"{print $2}' "$LARAVEL_DIR/.env")
-        DB_USER=$(awk -F= '$1=="DB_USERNAME"{print $2}' "$LARAVEL_DIR/.env")
-        DB_PASS=$(awk -F= '$1=="DB_PASSWORD"{print $2}' "$LARAVEL_DIR/.env")
+        DB_NAME=$(read_env DB_DATABASE)
+        DB_USER=$(read_env DB_USERNAME)
+        DB_PASS=$(read_env DB_PASSWORD)
     fi
     if [ -z "${DB_NAME:-}" ] || [ -z "${DB_USER:-}" ]; then
-        log "   ⚠️  Sin creds DB en .env actual. Preguntau manualmente."
+        log "   ⚠️  Sin creds DB en .env actual. Pregunta manualmente."
         read -rp "   DB name: " DB_NAME
         read -rp "   DB user (de Laravel): " DB_USER
         read -rsp "   DB pass: " DB_PASS; echo
     fi
 
     # 1) Test gzip + pg_restore --list valida headers antes.
-    if ! gzip -t "$SRC" 2>/tmp/rdb.err; then
-        log "   ❌ gzip -t falla: $(cat /tmp/rdb.err)"; fail=1
+    if ! gzip -t "$SRC" 2>"$BACKUP_ROOT/tmp/rdb.err"; then
+        log "   ❌ gzip -t falla: $(cat "$BACKUP_ROOT/tmp/rdb.err" 2>/dev/null)"; fail=1
     elif ! gunzip -c "$SRC" | pg_restore --list >/dev/null 2>&1; then
         log "   ❌ pg_restore --list falla (dump corrupto)"; fail=1
     else
         # 2) Backup de DB actual a .restored-$NOW/dump-pre-restore.db.gz
         log "   >> Respaldo DB actual..."
-        if PGPASSWORD="$DB_PASS" pg_dump --format=custom "$DB_NAME" 2>/dev/null \
+        if PGPASSWORD="$DB_PASS" pg_dump --format=custom --host=127.0.0.1 --username="$DB_USER" "$DB_NAME" 2>/dev/null \
             | gzip -9c > "$BACKUP_PRE/dump-pre-restore.db.gz"
         then
             log "   >> Backup pre-restore: $BACKUP_PRE/dump-pre-restore.db.gz"
@@ -183,13 +203,13 @@ if [ "$RESTORE_DB" = "1" ]; then
         log "   >> pg_restore --clean --if-exists..."
         if gunzip -c "$SRC" | PGPASSWORD="$DB_PASS" pg_restore --clean --if-exists \
             --no-owner --no-privileges --dbname="$DB_NAME" --host=127.0.0.1 \
-            --username="$DB_USER" 2>/tmp/rdb2.err
+            --username="$DB_USER" 2>"$BACKUP_ROOT/tmp/rdb2.err"
         then
             log "   ✅ DB restaurada."
             ok=1
         else
             log "   ⚠️  pg_restore terminó con avisos (común con --clean). Detalle:"
-            tail -5 /tmp/rdb2.err | tee -a "$RESTORE_LOG"
+            tail -5 "$BACKUP_ROOT/tmp/rdb2.err" | tee -a "$RESTORE_LOG"
             # No necesariamente fatal: pg_restore reporta "WARNING" por DROP IF EXISTS.
         fi
     fi
@@ -207,8 +227,8 @@ if [ "$RESTORE_FILES" = "1" ]; then
     fi
     if [ ! -d "$LARAVEL_DIR" ]; then
         log "   ❌ $LARAVEL_DIR no existe. Abortar files."; fail=1
-    elif ! gzip -t "$SRC" 2>/tmp/rf.err; then
-        log "   ❌ gzip -t falla: $(cat /tmp/rf.err)"; fail=1
+    elif ! gzip -t "$SRC" 2>"$BACKUP_ROOT/tmp/rf.err"; then
+        log "   ❌ gzip -t falla: $(cat "$BACKUP_ROOT/tmp/rf.err" 2>/dev/null)"; fail=1
     elif ! tar -tzf "$SRC" >/dev/null 2>&1; then
         log "   ❌ tar header corrupto"; fail=1
     else
@@ -218,7 +238,7 @@ if [ "$RESTORE_FILES" = "1" ]; then
         # Restaurar tar en /var/www (mantiene dirname).
         log "   >> Extrayendo tar a /var/www..."
         mkdir -p /var/www
-        if tar -xzf "$SRC" -C /var/www 2>/tmp/rf2.err; then
+        if tar -xzf "$SRC" -C /var/www 2>"$BACKUP_ROOT/tmp/rf2.err"; then
             # Restaurar .env actual (tar.dat excluye .env; lo dejamos o viene de secrets).
             if [ -f "$BACKUP_PRE/$(basename "$LARAVEL_DIR").pre-restore/.env" ]; then
                 cp -a "$BACKUP_PRE/$(basename "$LARAVEL_DIR").pre-restore/.env" "$LARAVEL_DIR/.env"
@@ -232,7 +252,7 @@ if [ "$RESTORE_FILES" = "1" ]; then
             restorecon -R "$LARAVEL_DIR" 2>/dev/null || true
             log "   ✅ FILES restaurados a $LARAVEL_DIR (owner $LARAVEL_USER:$LARAVEL_USER, SELinux relabeled)."
         else
-            log "   ❌ tar -xzf falló: $(cat /tmp/rf2.err)"; fail=1
+            log "   ❌ tar -xzf falló: $(cat "$BACKUP_ROOT/tmp/rf2.err" 2>/dev/null)"; fail=1
         fi
     fi
 fi
@@ -253,8 +273,8 @@ if [ "$RESTORE_SECRETS" = "1" ]; then
         chmod 700 "$TMP_SECRETS"
         log "   >> Decrypt GPG + extraer tar a $TMP_SECRETS..."
         if gpg --batch --quiet --no-tty --pinentry-mode loopback \
-                --passphrase-file "$KEY_FILE" --decrypt "$SRC" 2>/tmp/rs1.err \
-            | tar -x -C "$TMP_SECRETS" 2>/tmp/rs2.err
+                --passphrase-file "$KEY_FILE" --decrypt "$SRC" 2>"$BACKUP_ROOT/tmp/rs1.err" \
+            | tar -x -C "$TMP_SECRETS" 2>"$BACKUP_ROOT/tmp/rs2.err"
         then
             # Backup previo de configs sensibles actuales a $BACKUP_PRE/sec-pre-restore.tar.gz.
             log "   >> Backup previo de configs sensibles actuales..."
@@ -283,14 +303,14 @@ if [ "$RESTORE_SECRETS" = "1" ]; then
             # SELinux relabel configs críticos.
             restorecon -Rv /etc/ssh /etc/pam.d /etc/redis /etc/sudoers.d /etc/nginx 2>/dev/null || true
             # Validar sintaxis críticas antes de restart.
-            sshd -t 2>/tmp/sshd_test.err || { log "   ⚠️  sshd -t falla tras restore: $(cat /tmp/sshd_test.err)"; }
+            sshd -t 2>"$BACKUP_ROOT/tmp/sshd_test.err" || { log "   ⚠️  sshd -t falla tras restore: $(cat "$BACKUP_ROOT/tmp/sshd_test.err" 2>/dev/null)"; }
             visudo -c 2>/dev/null || { log "   ⚠️  visudo -c falla tras restore."; }
             nginx -t 2>/dev/null || { log "   ⚠️  nginx -t falla tras restore."; }
             log "   ✅ SECRETS restaurados. Reinicia servicios cd:"
             log "        sudo systemctl restart sshd nginx redis postgresql-18 fail2ban auditd octane"
             ok=1
         else
-            log "   ❌ Decrypt/extract falló. gpg=$(cat /tmp/rs1.err) tar=$(cat /tmp/rs2.err)"; fail=1
+            log "   ❌ Decrypt/extract falló. gpg=$(cat "$BACKUP_ROOT/tmp/rs1.err" 2>/dev/null) tar=$(cat "$BACKUP_ROOT/tmp/rs2.err" 2>/dev/null)"; fail=1
         fi
         rm -rf "$TMP_SECRETS" 2>/dev/null || true
     fi

@@ -1,5 +1,12 @@
 #!/bin/bash
-set -e
+set -eo pipefail
+
+if [ "$EUID" -ne 0 ]; then
+    echo "⚠️  Ejecuta como root o con sudo."
+    exit 1
+fi
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/pgsql-18/bin:$PATH"
 
 # ==============================================================================
 # MOTOR DE BACKUPS (v1) — corre desde /etc/cron.d/backup a la hora configurada
@@ -77,7 +84,7 @@ mover_pending() {
     chmod 600 "$pend_dir/$(basename "$archivo")"
     chown root:root "$pend_dir/$(basename "$archivo")"
     SIZES["$tipo"]=$(stat -c '%s' "$pend_dir/$(basename "$archivo")")
-    sha256sum "$pend_dir/$(basename "$archivo")" > "$pend_dir/$(basename "$archivo").sha256" 2>/dev/null || true
+    (cd "$pend_dir" && sha256sum "$(basename "$archivo")" > "$(basename "$archivo").sha256") 2>/dev/null || true
     logecho "✅ [$tipo] $(basename "$archivo") ($(numfmt --to=iec "${SIZES[$tipo]}" 2>/dev/null || echo "${SIZES[$tipo]}b"))"
 }
 
@@ -95,7 +102,24 @@ fi
 
 if [ -n "${LARAVEL_DIR:-}" ] && [ -f "$LARAVEL_DIR/.env" ]; then
     logecho "   Proyecto: $LARAVEL_DIR"
-    read_env() { awk -F= -v k="$1" '$1==k && $2!=""{sub(/^[ \t]+/,"",$2); sub(/[ \t]+$/,"",$2); print $2; exit}' "$LARAVEL_DIR/.env"; }
+    read_env() {
+        awk -F= -v k="$1" '
+            {
+                key = $1;
+                sub(/^[ \t]+/, "", key);
+                sub(/[ \t]+$/, "", key);
+                if (key == k && NF >= 2) {
+                    val = substr($0, index($0, "=") + 1);
+                    sub(/^[ \t]+/, "", val);
+                    sub(/[ \t]+$/, "", val);
+                    sub(/^["'\'']/, "", val);
+                    sub(/["'\'']$/, "", val);
+                    print val;
+                    exit;
+                }
+            }
+        ' "$LARAVEL_DIR/.env"
+    }
     DB_NAME=$(read_env DB_DATABASE)
     DB_USER=$(read_env DB_USERNAME)
     DB_PASS=$(read_env DB_PASSWORD)
@@ -115,13 +139,13 @@ if [ -n "${DB_NAME:-}" ] && [ -n "${DB_USER:-}" ]; then
         DB_DUMP="$TMP_DIR/state-$TAG.db"
         # pg_dump --format=custom → pg_restore permite restore parcial.
         # pipefail: si pg_dump falla no enmascarar exitcode del gzip.
-        if set -o pipefail; PGPASSWORD="$DB_PASS" pg_dump --format=custom \
+        if PGPASSWORD="$DB_PASS" pg_dump --format=custom \
             --no-owner --no-privileges --host=127.0.0.1 --username="$DB_USER" \
-            "$DB_NAME" 2>/tmp/pd.err | gzip -9c > "$DB_DUMP"
+            "$DB_NAME" 2>"$TMP_DIR/pd.err" | gzip -9c > "$DB_DUMP"
         then
             mover_pending db "$DB_DUMP" || true
         else
-            logecho "❌ [db] pg_dump falló. Detalle: $(cat /tmp/pd.err 2>/dev/null)"
+            logecho "❌ [db] pg_dump falló. Detalle: $(cat "$TMP_DIR/pd.err" 2>/dev/null)"
             STATUS_OK=0; EXIT_CODE=1
         fi
     else
@@ -137,18 +161,18 @@ fi
 if [ -n "${LARAVEL_DIR:-}" ]; then
     logecho ">> [3/5] tar Laravel (excluye .env/vendor/node_modules/cache/logs)..."
     FILES_TAR="$TMP_DIR/state-$TAG.dat"
-    if set -o pipefail; tar --warning=no-file-changed -czf "$FILES_TAR" \
+    if tar --warning=no-file-changed -czf "$FILES_TAR" \
         --exclude='.env' \
         --exclude='vendor' \
         --exclude='node_modules' \
         --exclude='storage/framework/cache/*' \
         --exclude='storage/logs/*.log' \
         --exclude='.git' \
-        -C /var/www "$(basename "$LARAVEL_DIR")" 2>/tmp/tar.err
+        -C /var/www "$(basename "$LARAVEL_DIR")" 2>"$TMP_DIR/tar.err"
     then
         mover_pending files "$FILES_TAR" || true
     else
-        logecho "❌ [files] tar falló. Detalle: $(cat /tmp/tar.err 2>/dev/null)"
+        logecho "❌ [files] tar falló. Detalle: $(cat "$TMP_DIR/tar.err" 2>/dev/null)"
         STATUS_OK=0; EXIT_CODE=1
     fi
 else
@@ -199,15 +223,15 @@ rm -f "$KEYRING_LIST"
 if [ -z "$FILTERED" ]; then
     logecho "⚠️  No se localizó ningún config sensible. .keyring vacío skip."
 else
-    printf '%s\n' "$FILTERED" | tar --warning=no-file-changed -cf - -T - 2>/tmp/tark.err \
-        | gpg --batch --yes --quiet --no-tty --symmetric \
+    printf '%s\n' "$FILTERED" | tar --warning=no-file-changed -cf - -T - 2>"$TMP_DIR/tark.err" \
+        | gpg --batch --yes --quiet --no-tty --pinentry-mode loopback --symmetric \
               --cipher-algo AES256 --digest-algo SHA512 \
               --passphrase-file "$KEY_FILE" \
-              -o "$KEYRING" 2>/tmp/gpg.err
+              -o "$KEYRING" 2>"$TMP_DIR/gpg.err"
     if [ -s "$KEYRING" ]; then
         mover_pending keyring "$KEYRING" || true
     else
-        logecho "❌ [keyring] GPG/tar falló. tar=$(cat /tmp/tark.err 2>/dev/null) gpg=$(cat /tmp/gpg.err 2>/dev/null)"
+        logecho "❌ [keyring] GPG/tar falló. tar=$(cat "$TMP_DIR/tark.err" 2>/dev/null) gpg=$(cat "$TMP_DIR/gpg.err" 2>/dev/null)"
         STATUS_OK=0; EXIT_CODE=1
     fi
 fi
@@ -240,13 +264,13 @@ done
 # Procesa substitution (no pipe) para que el BODY se ejecute en shell principal.
 KEEP=$((RETENTION_DAYS))
 # TAGs ordenados DESC lexicográficamente = cronológicamente (formato YYYYMMDD-HHMM).
-ALL_TAGS=$(ls -1 "$DAILY_DIR/" | grep -oE '^state-[0-9]{8}-[0-9]{4}' | sort -ur)
+ALL_TAGS=$(ls -1 "$DAILY_DIR/" 2>/dev/null | grep -oE '^state-[0-9]{8}-[0-9]{4}' | sort -ur)
 OLD_TAGS=$(printf '%s\n' "$ALL_TAGS" | tail -n +$((KEEP + 1)))
 if [ -n "$OLD_TAGS" ]; then
     while read -r oldtag; do
         [ -z "$oldtag" ] && continue
-        rm -f "$DAILY_DIR/${oldtag}".{db,dat,keyring} \
-              "$DAILY_DIR/${oldtag}".{db,dat,keyring}.sha256 2>/dev/null
+        rm -f "$DAILY_DIR/$oldtag.db" "$DAILY_DIR/$oldtag.dat" "$DAILY_DIR/$oldtag.keyring" \
+              "$DAILY_DIR/$oldtag.db.sha256" "$DAILY_DIR/$oldtag.dat.sha256" "$DAILY_DIR/$oldtag.keyring.sha256" 2>/dev/null
         logecho "   >> Pruned $oldtag (>$RETENTION_DAYS días)"
     done <<< "$OLD_TAGS"
 else

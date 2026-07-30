@@ -261,11 +261,13 @@ as_laravel "php artisan shield:generate --all --panel=admin --no-interaction" ||
 # ------------------------------------------------------------------------------
 # 6. TRAIT HasRoles EN User (obligatorio para assignRole de spatie)
 # ------------------------------------------------------------------------------
-echo " [3/6] Parcheando User.php con HasRoles..."
+echo " [3/6] Parcheando User.php con HasRoles y FilamentUser..."
 sudo -u "$LARAVEL_USER" bash -c "cat > '$PROYECTO_DIR/patch_user.php' << 'PHP'
 <?php
 \$f = __DIR__ . '/app/Models/User.php';
 \$c = file_get_contents(\$f);
+\$changed = false;
+
 if (strpos(\$c, 'HasRoles') === false) {
     \$c = str_replace(
         'use Illuminate\\\\Notifications\\\\Notifiable;',
@@ -277,10 +279,31 @@ if (strpos(\$c, 'HasRoles') === false) {
         'use HasFactory, Notifiable, HasRoles;',
         \$c
     );
-    file_put_contents(\$f, \$c);
+    \$changed = true;
     echo \"User.php parcheado con HasRoles\n\";
 } else {
     echo \"User.php ya tiene HasRoles\n\";
+}
+
+if (strpos(\$c, 'FilamentUser') === false) {
+    \$c = str_replace(
+        'class User extends Authenticatable',
+        'class User extends Authenticatable implements \\\\Filament\\\\Models\\\\Contracts\\\\FilamentUser',
+        \$c
+    );
+    \$c = str_replace(
+        'use HasFactory, Notifiable, HasRoles;',
+        'use HasFactory, Notifiable, HasRoles, \\\\BezhanSalleh\\\\FilamentShield\\\\Traits\\\\HasPanelShield;',
+        \$c
+    );
+    \$changed = true;
+    echo \"User.php parcheado con FilamentUser y HasPanelShield\n\";
+} else {
+    echo \"User.php ya implementa FilamentUser\n\";
+}
+
+if (\$changed) {
+    file_put_contents(\$f, \$c);
 }
 PHP"
 as_laravel "php patch_user.php && rm -f patch_user.php"

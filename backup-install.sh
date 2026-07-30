@@ -13,6 +13,8 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/pgsql-18/bin:$PATH"
+
 BACKUP_ROOT="/var/lib/.system-state"
 SNAPSHOTS_DIR="$BACKUP_ROOT/snapshots"
 LOG_FILE="/var/log/.backup.log"
@@ -205,6 +207,7 @@ done
 echo ">> [6/7] Instalando entradas cron ($CADENCIA_LABEL, retención ${RET_DAYS}d)..."
 CRON_MARKER="# --- backup-system-v1 ---"
 CRON_BLOCK=$(cat <<EOF
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/pgsql-18/bin
 $CRON_MARKER
 # Backup según cadencia elegida: $CADENCIA_LABEL (retención flat ${RET_DAYS}d).
 $CADENCIA_MIN $CADENCIA_HOUR $CADENCIA_DOM $CADENCIA_DOW * root /usr/local/sbin/backup.sh >> $LOG_FILE 2>&1

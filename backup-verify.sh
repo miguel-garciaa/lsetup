@@ -9,6 +9,13 @@
 
 set -uo pipefail   # NO -e: queremos reportar todos los fallos, no abortar al 1ero.
 
+if [ "$EUID" -ne 0 ]; then
+    echo "⚠️  Ejecuta este script como root o con sudo."
+    exit 1
+fi
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/pgsql-18/bin:$PATH"
+
 CONF=/etc/backup.conf
 if [ ! -f "$CONF" ]; then
     echo "[$(date '+%F %T')] [FATAL] falta $CONF. Ejecuta: sudo bash backup-install.sh" >&2
