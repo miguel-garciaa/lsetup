@@ -233,14 +233,30 @@ sudo chown -R "$LARAVEL_USER":"$LARAVEL_USER" "$PROYECTO_DIR/bootstrap" "$PROYEC
 # ------------------------------------------------------------------------------
 echo " [2/6] Instalando Filament Shield..."
 as_laravel "composer require bezhansalleh/filament-shield --no-interaction"
+# dump-autoload -o: sin ello el autoload map no registra las migraciones de
+# Spatie laravel-permission (auto-descubiertas vía loadMigrationsFrom) y
+# `php artisan migrate` no las ve -> tablas permissions/roles NO se crean ->
+# shield:generate peta con PDO "relation permissions does not exist".
+as_laravel "composer dump-autoload -o"
 # shield:install requiere el id del panel ('admin') en modo --no-interaction:
 # sin él lanza NonInteractiveValidationException.
 as_laravel "php artisan shield:install admin --no-interaction"
-# spatie/laravel-permission: publicar migraciones y migrar ANTES de generate,
-# si no, shield:generate falla con "relation permissions does not exist".
-as_laravel "php artisan vendor:publish --provider=\"Spatie\Permission\PermissionServiceProvider\" --tag=\"permission-migrations\" --force"
+# spatie/laravel-permission: publicar migraciones (idempotente) y migrar ANTES
+# de generate. --force para no interactivo.
+as_laravel "php artisan vendor:publish --provider=\"Spatie\Permission\PermissionServiceProvider\" --tag=\"permission-migrations\" --force" || true
 as_laravel "APP_ENV=production php artisan migrate --force"
-as_laravel "php artisan shield:generate --all --panel=admin --no-interaction"
+# Migraciones de Spatie laravel-permission: aunque dump-autoload precedente
+# deberia permitir su auto-descubrimiento, en algunos setups no se registran
+# y `migrate --force` las salta -> shield:generate peta con PDO "relation
+# permissions does not exist" -> set -e aborta antes de crear admin -> /admin 403.
+# --path explicito es idempotente: si ya corrieron via generic migrate, son
+# no-op (registradas en `migrations` table); si no, se crean ahora.
+as_laravel "APP_ENV=production php artisan migrate --path=vendor/spatie/laravel-permission/database/migrations --force" || true
+# shield:generate con || true: si falla (permisos a medias de run previa, etc),
+# no aborta el script — el admin se crea igual con syncRoles super_admin (bypass
+# Shield a nivel panel access) y el warning deja rastro para depuracion.
+as_laravel "php artisan shield:generate --all --panel=admin --no-interaction" || \
+    echo "  AVISO: shield:generate falló (ver log). super_admin role sigue valiendo para panel access."
 
 # ------------------------------------------------------------------------------
 # 6. TRAIT HasRoles EN User (obligatorio para assignRole de spatie)
@@ -271,17 +287,26 @@ as_laravel "php patch_user.php && rm -f patch_user.php"
 
 # ------------------------------------------------------------------------------
 # 7. USUARIO ADMIN DEL PANEL
+# syncRoles (no assignRole): idempotente — si ya tenía el rol no duplica, y
+# si el rol falto por un shield:install roto lo (re)asigna. updateOrCreate para
+# que re-ejecutar panel.sh actualice name/pass (intencional) sin duplicar.
+# firstOrCreate del Role super_admin cubre el caso de shield:install abortado.
+# Vars via env() como el original: el --execute va entre single-quotes y $VAR
+# NO se expande ahi; export previo + env("VAR") en PHP es el patron seguro del
+# repo (mismo de login.sh para evitar inyeccion desde secrets).
 # ------------------------------------------------------------------------------
-echo " [4/6] Creando usuario admin..."
-# Se pasan por env para no romper el quoting de tinker.
+echo " [4/6] Creando/actualizando usuario admin..."
 as_laravel "export ADMIN_NAME='$ADMIN_NAME' ADMIN_EMAIL='$ADMIN_EMAIL' ADMIN_PASS='$ADMIN_PASS'; \
     php artisan tinker --execute='
-\$u = \App\Models\User::firstOrCreate(
+use Spatie\Permission\Models\Role;
+Role::firstOrCreate([\"name\" => \"super_admin\", \"guard_name\" => \"web\"]);
+\$u = \App\Models\User::updateOrCreate(
     [\"email\" => env(\"ADMIN_EMAIL\")],
     [\"name\" => env(\"ADMIN_NAME\"), \"password\" => bcrypt(env(\"ADMIN_PASS\"))]
 );
-\$u->assignRole(\"super_admin\");
-echo \"Admin: {\$u->email}\" . PHP_EOL;'"
+\$u->syncRoles([\"super_admin\"]);
+echo \"Admin: \" . \$u->email . \" | roles: \" . \$u->roles->pluck(\"name\")->implode(\",\") . PHP_EOL;
+'"
 
 # ------------------------------------------------------------------------------
 # 8. DEBUGBAR (solo dev)
