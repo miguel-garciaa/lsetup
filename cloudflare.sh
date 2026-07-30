@@ -167,6 +167,93 @@ echo "Recargando Nginx..."
 sudo systemctl reload nginx
 
 
+# 7. Actualizar APP_URL en .env del proyecto Laravel (HTTPS)
+# Livewire/Filament generan los endpoints de POST (login, forms) con APP_URL.
+# Si APP_URL sigue apuntando a http://<SERVER_IP> (lo que deja setup.sh), el
+# login del panel hace POST a http:// desde una página servida por HTTPS ->
+# mixed content -> el navegador bloquea la peticion -> submit "no hace nada".
+# awk (no sed) para reescribir el valor: consistente con login.sh y evita
+# Problemas de escaping si el dominio trae caracteres especiales.
+echo ""
+echo "=== ACTUALIZANDO APP_URL EN .env (HTTPS) ==="
+read -p "Ruta del proyecto Laravel [/var/www/laravel1]: " PROYECTO_DIR
+PROYECTO_DIR=${PROYECTO_DIR:-/var/www/laravel1}
+
+if [ -f "$PROYECTO_DIR/.env" ]; then
+    NEW_URL="https://${DOMAIN_NAME}"
+    sudo cp "$PROYECTO_DIR/.env" "$PROYECTO_DIR/.env.bak.$(date +%s)"
+    sudo awk -v url="$NEW_URL" '
+        /^APP_URL=/ { print "APP_URL="url; found=1; next }
+        { print }
+        END { if (!found) print "APP_URL="url }
+    ' "$PROYECTO_DIR/.env" | sudo tee "$PROYECTO_DIR/.env.new" > /dev/null
+    sudo mv "$PROYECTO_DIR/.env.new" "$PROYECTO_DIR/.env"
+    sudo chown laravel:laravel "$PROYECTO_DIR/.env"
+    sudo chmod 640 "$PROYECTO_DIR/.env"
+    echo "  .env: APP_URL=$NEW_URL"
+
+    # Parchear TrustProxies + forceScheme('https') si no están ya (idempotente).
+    # Sin esto, Livewire/Filament ignoran X-Forwarded-Proto de Nginx y generan
+    # endpoints http:// desde Octane => el navegador bloquea el POST del login
+    # del panel ("botón no hace nada"). Patrón heredoc PHP, no sed.
+    if id laravel &>/dev/null; then
+        LARAVEL_HOME=$(getent passwd laravel | cut -d: -f6)
+        sudo -u laravel -- bash -c "cat > '$PROYECTO_DIR/patch_trust.php' << 'PHP'
+<?php
+\$bf = __DIR__.'/bootstrap/app.php';
+\$bc = file_get_contents(\$bf);
+if (strpos(\$bc, 'trustProxies') === false) {
+    \$anchor = '->withMiddleware(function (Middleware \$middleware) {';
+    \$pos = strpos(\$bc, \$anchor);
+    if (\$pos !== false) {
+        \$insertAt = \$pos + strlen(\$anchor);
+        \$bc = substr(\$bc, 0, \$insertAt)
+            . \"\\n        \\\$middleware->trustProxies(at: '*');\"
+            . substr(\$bc, \$insertAt);
+        file_put_contents(\$bf, \$bc);
+        echo \"bootstrap/app.php: trustProxies agregado\\n\";
+    } else {
+        echo \"bootstrap/app.php: ancla withMiddleware no encontrada\\n\";
+    }
+} else { echo \"bootstrap/app.php: trustProxies ya presente\\n\"; }
+
+\$af = __DIR__.'/app/Providers/AppServiceProvider.php';
+\$ac = file_get_contents(\$af);
+if (strpos(\$ac, 'forceScheme') === false) {
+    \$ac = str_replace(
+        'use Illuminate\\\\Support\\\\ServiceProvider;',
+        \"use Illuminate\\\\Support\\\\ServiceProvider;\\nuse Illuminate\\\\Support\\\\Facades\\\\URL;\",
+        \$ac
+    );
+    \$bp = strpos(\$ac, 'public function boot');
+    if (\$bp !== false) {
+        \$bp2 = strpos(\$ac, '{', \$bp);
+        if (\$bp2 !== false) {
+            \$ia = \$bp2 + 1;
+            \$ac = substr(\$ac, 0, \$ia)
+                . \"\\n        if (\\\$this->app->environment('production')) {\\n            URL::forceScheme('https');\\n        }\"
+                . substr(\$ac, \$ia);
+            file_put_contents(\$af, \$ac);
+            echo \"AppServiceProvider: forceScheme agregado\\n\";
+        }
+    }
+} else { echo \"AppServiceProvider: forceScheme ya presente\\n\"; }
+PHP"
+        sudo chown -R laravel:laravel "$PROYECTO_DIR/bootstrap" "$PROYECTO_DIR/app/Providers" 2>/dev/null || true
+
+        sudo runuser -u laravel -- env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" \
+            bash -lc "cd '$PROYECTO_DIR' && php patch_trust.php && rm -f patch_trust.php && APP_ENV=production /usr/bin/php artisan optimize:clear && APP_ENV=production /usr/bin/php artisan config:cache && APP_ENV=production /usr/bin/php artisan route:cache" 2>&1 || true
+        sudo systemctl restart octane 2>/dev/null || true
+        echo "  TrustProxies aplicado y config re-cacheada (APP_ENV=production) y Octane reiniciado."
+    else
+        echo "  Aviso: usuario 'laravel' no existe; APP_URL actualizado pero Octane NO reiniciado."
+    fi
+else
+    echo "  Aviso: no se encontro $PROYECTO_DIR/.env"
+    echo "  Actualiza APP_URL manualmente a https://${DOMAIN_NAME} y re-cachea config."
+fi
+
+
 echo "=========================================================================="
 echo " ¡PROCESO COMPLETADO CON ÉXITO!"
 echo "=========================================================================="
