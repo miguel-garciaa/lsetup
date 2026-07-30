@@ -17,7 +17,6 @@ echo "==========================================================================
 echo " AVISO: este script revierte setup.sh, NO secure.sh."
 echo "   Permanecen activos: puerto SSH custom, firewalld por IP, Fail2ban,"
 echo "   CrowdSec, AIDE, sysctl hardening y /etc/sudoers.d/99-local-path."
-echo "   Backups cifrados (sección 16): opt-in; si no confirmas NO se borran."
 echo "   Para revertir secure.sh, revierte esos cambios manualmente."
 echo "=========================================================================="
 
@@ -128,44 +127,6 @@ echo "=== 15. LIMPIAR USUARIOS DEL SISTEMA ==="
 pkill -u "$LARAVEL_USER" 2>/dev/null
 userdel "$LARAVEL_USER" 2>/dev/null
 
-echo "=== 16. ELIMINAR BACKUPS CIFRADOS (opt-in, default=NO) ==="
-# NO borra backups por defecto:BD+cifrado configs son caros de perder.
-# Pregunta explícita; usuario decide.
-BACKUP_ROOT="/var/lib/.system-state"
-KEY_FILE="/root/.backup-key"
-CRON_FILE="/etc/cron.d/backup"
-SCRIPTS_LIST="/usr/local/sbin/backup.sh /usr/local/sbin/backup-verify.sh /usr/local/sbin/restore.sh"
-
-if [ -d "$BACKUP_ROOT" ] || [ -f "$KEY_FILE" ] || [ -f "$CRON_FILE" ] || [ -f /etc/backup.conf ]; then
-    echo "    Sistema de backups detectado:"
-    [ -d "$BACKUP_ROOT" ] && echo "      - Snapshots:     $BACKUP_ROOT ($(du -sh "$BACKUP_ROOT" 2>/dev/null | awk '{print $1}')"
-    [ -f "$KEY_FILE" ]   && echo "      - Passphrase:    $KEY_FILE"
-    [ -f "$CRON_FILE" ]  && echo "      - Cron:          $CRON_FILE"
-    [ -f /etc/backup.conf ] && echo "      - Config:        /etc/backup.conf"
-    for s in $SCRIPTS_LIST; do [ -f "$s" ] && echo "      - Script:        $s"; done
-    echo ""
-    read -rp "    ¿Borrar TODO el sistema de backups? [s/N]: " BKP_DEL
-    BKP_DEL="${BKP_DEL:-N}"
-    BKP_DEL="${BKP_DEL,,}"
-    if [[ "$BKP_DEL" == "s" || "$BKP_DEL" == "si" || "$BKP_DEL" == "sí" ]]; then
-        # Quitar chattr +i del passphrase antes de rm.
-        chattr -i "$KEY_FILE" 2>/dev/null || true
-        rm -rf "$BACKUP_ROOT"
-        rm -f "$KEY_FILE"
-        rm -f /etc/backup.conf
-        rm -f "$CRON_FILE"
-        for s in $SCRIPTS_LIST; do rm -f "$s"; done
-        rm -f /var/log/.backup.log
-        rm -f /var/run/.backup.lock
-        echo "    >> Backups + cron + scripts + passphrase eliminados."
-    else
-        echo "    >> Backups conservados (default). Verifícalos con:"
-        echo "        sudo /usr/local/sbin/backup-verify.sh"
-    fi
-else
-    echo "    No se detectó sistema de backups. Skip."
-fi
-
 echo "=========================================================================="
 echo " LIMPIEZA COMPLETADA"
 echo "=========================================================================="
@@ -181,41 +142,7 @@ echo "   - Repos Remi/PGDG               : eliminados"
 echo "   - Composer                      : eliminado"
 echo "   - Usuario laravel               : eliminado"
 echo "   - Firewall/SELinux/límites      : revertidos"
-echo "   - Backups cifrados              : opt-in (ver sección 16)"
 echo ""
 echo " Reinicia el servidor para aplicar cambios de kernel/sysctl:"
 echo "   sudo reboot"
 echo "=========================================================================="
-
-# ------------------------------------------------------------------------------
-# PROMPT DE REBOOT PROGRAMADO (sysctl persistente se revierte solo tras reboot)
-# ------------------------------------------------------------------------------
-maybe_reboot_clear() {
-    dnf install -y at 2>/dev/null || true
-    systemctl enable --now atd 2>/dev/null || true
-    echo ""
-    echo " ⚠️  Cambios pendientes de reboot tras limpieza:"
-    echo "      - sysctl hardening revertido en .conf (en caliente sigue aplicado)"
-    echo "      - /tmp noexec tmpfs removido de fstab (aplica tras reboot)"
-    echo "      - servicios masked (bluetooth/nfs/etc.) unmasked (reboot los re-llama)"
-    echo ""
-    echo "   Programa reboot (Enter=manual más tarde):"
-    echo "     - 'now'                          reboot en 5s"
-    echo "     - 'HH:MM'                        hoy a esa hora (p.ej. 04:00)"
-    echo "     - 'YYYY-MM-DD HH:MM'             fecha+hora exactas"
-    echo "     - 'sun 04:00' / 'mon 02:30' / 'tomorrow 03:00'  formatos de 'at'"
-    read -rp "   Opción [Enter=skip]: " WHEN
-    [ -z "$WHEN" ] && { echo "   >> No programado. Reboot manual."; return 0; }
-    if [ "$WHEN" = "now" ]; then
-        echo "   >> Reboot en 5s..."
-        ( sleep 5 && systemctl reboot ) &
-    elif echo "systemctl reboot" | at "$WHEN" 2>/dev/null; then
-        echo "   >> Reboot programado con 'at' para: $WHEN"
-        echo "      at -l            lista jobs | sudo at -r <id>  cancela"
-    elif shutdown -r "$WHEN" 2>/dev/null; then
-        echo "   >> Reboot programado (shutdown) para: $WHEN"
-    else
-        echo "   ⚠️  Formato no reconocido. Reboot manual: sudo reboot"
-    fi
-}
-maybe_reboot_clear
