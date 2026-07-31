@@ -225,9 +225,9 @@ if [ -z "$FILTERED" ]; then
 else
     printf '%s\n' "$FILTERED" | tar --warning=no-file-changed -cf - -T - 2>"$TMP_DIR/tark.err" \
         | gpg --batch --yes --quiet --no-tty --pinentry-mode loopback --symmetric \
-              --cipher-algo AES256 --digest-algo SHA512 \
-              --passphrase-file "$KEY_FILE" \
-              -o "$KEYRING" 2>"$TMP_DIR/gpg.err"
+                --cipher-algo AES256 --digest-algo SHA512 \
+                --passphrase-file "$KEY_FILE" \
+                -o "$KEYRING" 2>"$TMP_DIR/gpg.err"
     if [ -s "$KEYRING" ]; then
         mover_pending keyring "$KEYRING" || true
     else
@@ -270,7 +270,7 @@ if [ -n "$OLD_TAGS" ]; then
     while read -r oldtag; do
         [ -z "$oldtag" ] && continue
         rm -f "$DAILY_DIR/$oldtag.db" "$DAILY_DIR/$oldtag.dat" "$DAILY_DIR/$oldtag.keyring" \
-              "$DAILY_DIR/$oldtag.db.sha256" "$DAILY_DIR/$oldtag.dat.sha256" "$DAILY_DIR/$oldtag.keyring.sha256" 2>/dev/null
+                "$DAILY_DIR/$oldtag.db.sha256" "$DAILY_DIR/$oldtag.dat.sha256" "$DAILY_DIR/$oldtag.keyring.sha256" 2>/dev/null
         logecho "   >> Pruned $oldtag (>$RETENTION_DAYS días)"
     done <<< "$OLD_TAGS"
 else
