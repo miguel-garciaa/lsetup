@@ -18,7 +18,7 @@ echo " AVISO: este script revierte setup.sh, NO secure.sh."
 echo "   Permanecen activos: puerto SSH custom, firewalld por IP, Fail2ban,"
 echo "   CrowdSec, AIDE, sysctl hardening y /etc/sudoers.d/99-local-path."
 echo "   Backups cifrados (sección 16): opt-in; si no confirmas NO se borran."
-echo "   Para revertir secure.sh, revierte esos cambios manualmente."
+echo "   Para revertir capa web v3 (secciones 25-30 + WAF + app harden), ver sección 17."
 echo "=========================================================================="
 
 echo "=== 1. DETENER Y DESHABILITAR SERVICIOS ==="
@@ -166,6 +166,74 @@ else
     echo "    No se detectó sistema de backups. Skip."
 fi
 
+echo "=== 17. REVERTIR FASE ANTI-ATAQUES WEB v3 (secure.sh secciones 25-30 + WAF + app) ==="
+# Best-effort: set +e ya activo. Limpia config creado por secure.sh v3, waf.sh
+# y laravel-harden.sh. NO revierte hardening SSH/firewalld/fail2ban (clear.sh
+#初衷: revierte setup.sh + capa v3 web; secure.sh core permanece).
+
+# (a) PHP CLI drop-in.
+rm -f /etc/php.d/99-hardening.ini 2>/dev/null
+echo "    - PHP CLI drop-in:          eliminado (si existía)."
+
+# (b) Nginx timeouts + method block + COEP/CORP + snippets rate-limit.
+rm -f /etc/nginx/conf.d/00-timeouts.conf \
+      /etc/nginx/conf.d/00-method-block.conf \
+      /etc/nginx/snippets/rate-limited-routes.conf \
+      /etc/nginx/snippets/method-guard.conf 2>/dev/null
+# Eliminar las 2 líneas COEP/CORP añadidas por secure.sh (sección 28) del extra-headers.
+if [ -f /etc/nginx/conf.d/00-sec-extra-headers.conf ]; then
+    sed -i -E '/Cross-Origin-Embedder-Policy|Cross-Origin-Resource-Policy/d' \
+        /etc/nginx/conf.d/00-sec-extra-headers.conf 2>/dev/null || true
+fi
+# Quitar includes inyectados en vhosts (method-guard + rate-limited-routes).
+for f in /etc/nginx/conf.d/*.conf; do
+    [ -f "$f" ] || continue
+    sed -i -E '/snippets\/method-guard\.conf|snippets\/rate-limited-routes\.conf/d' "$f" 2>/dev/null || true
+done
+nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+echo "    - Nginx timeouts/method/COEP: revertidos (recargado si OK)."
+
+# (c) Redis ACL (aclfile). restore-command ya queda en redis.conf; ACL file rm.
+if [ -f /etc/redis/redis.conf ]; then
+    sed -i -E '/^aclfile[[:space:]]+/d' /etc/redis/redis.conf 2>/dev/null || true
+fi
+rm -f /etc/redis/users.acl 2>/dev/null
+systemctl restart redis 2>/dev/null || true
+echo "    - Redis ACL (aclfile):       eliminado (rename-command permanece)."
+
+# (d) PostgreSQL: GRANT revert de REVOKE (solo si cluster sigue vivo).
+if systemctl is-active --quiet postgresql-18 2>/dev/null; then
+    sudo -u postgres psql -d laravel1 -c "GRANT CREATE ON SCHEMA public TO PUBLIC;" 2>/dev/null || true
+    sudo -u postgres psql -c "GRANT ALL ON DATABASE postgres TO PUBLIC;" 2>/dev/null || true
+    echo "    - PG REVOKE:                 revertido (GRANT CREATE/ALL)."
+else
+    echo "    - PG REVOKE:                 skip (cluster ya caído/eliminado)."
+fi
+
+# (e) WAF ModSecurity (creado por waf.sh): config + log, optional dnf remove.
+rm -rf /etc/nginx/modsec 2>/dev/null
+rm -rf /var/log/modsec 2>/dev/null
+if [ -f /etc/nginx/conf.d/modsec.conf ] || grep -rq 'modsecurity on' /etc/nginx/conf.d/ 2>/dev/null; then
+    for f in /etc/nginx/conf.d/*.conf; do
+        [ -f "$f" ] || continue
+        sed -i -E '/modsecurity on|modsecurity_rules|snippets\/modsec/d' "$f" 2>/dev/null || true
+    done
+    rm -f /etc/nginx/conf.d/modsec.conf /etc/nginx/snippets/modsec.conf 2>/dev/null
+fi
+dnf remove -y mod_security nginx-mod_security 2>/dev/null || true
+nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+echo "    - WAF ModSecurity:           config eliminado."
+
+# (f) laravel-harden.sh: EnvironmentFile drop-in + /etc/laravel/env + audit cron.
+rm -f /etc/systemd/system/octane.service.d/secrets.conf 2>/dev/null
+rmdir /etc/systemd/system/octane.service.d 2>/dev/null || true
+systemctl daemon-reload 2>/dev/null || true
+rm -rf /etc/laravel 2>/dev/null
+rm -f /etc/cron.d/laravel-audit 2>/dev/null
+rm -f /var/log/laravel-audit.log 2>/dev/null
+echo "    - App harden (envfile/cron):  eliminado."
+rm -f /var/log/php_errors.log 2>/dev/null
+
 echo "=========================================================================="
 echo " LIMPIEZA COMPLETADA"
 echo "=========================================================================="
@@ -182,6 +250,7 @@ echo "   - Composer                      : eliminado"
 echo "   - Usuario laravel               : eliminado"
 echo "   - Firewall/SELinux/límites      : revertidos"
 echo "   - Backups cifrados              : opt-in (ver sección 16)"
+echo "   - Fase anti-ataques web v3      : revertida (sección 17)"
 echo ""
 echo " Reinicia el servidor para aplicar cambios de kernel/sysctl:"
 echo "   sudo reboot"

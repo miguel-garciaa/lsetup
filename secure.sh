@@ -3,7 +3,7 @@ set -e
 
 # ==============================================================================
 # SCRIPT DE BASTIONADO INTEGRAL + SECOPS AVANZADO (ALMALINUX 10.x / RHEL 10)
-# v2 — defensa en profundidad, 24 secciones.
+# v2 — defensa en profundidad, 30 secciones.
 # NO instala 2FA (la gestiona 2fa.sh aparte). Idempotente: re-ejecutable sin
 # romper el estado de 2fa.sh ni ningún servicio en producción.
 # ==============================================================================
@@ -90,14 +90,58 @@ else
     echo "   ℹ️  No se detectó proyecto Laravel. .env no se parchea (configuración Redis aplica igual)."
 fi
 
+# Helper: re-cachea config de Laravel tras editar .env y reinicia Octane.
+# config:cache congela conexiones Redis/DB en bootstrap/cache/config.php;
+# sin re-cache, Octane ignora los cambios de .env → NOAUTH / WRONGPASS.
+recache_laravel() {
+    [ -z "$LARAVEL_DIR" ] && return 0
+    local owner home log
+    owner=$(stat -c '%U' "$LARAVEL_DIR/.env" 2>/dev/null || echo laravel)
+    home=$(getent passwd "$owner" 2>/dev/null | cut -d: -f6)
+    [ -z "$home" ] && home=/var/lib/laravel
+    log=$(mktemp)
+    echo "   >> Re-cacheando config de Laravel (config:cache → aplica .env a Octane)..."
+    if sudo -u "$owner" env HOME="$home" COMPOSER_HOME="$home/.composer" \
+            bash -lc "cd '$LARAVEL_DIR' && php artisan config:cache" >"$log" 2>&1; then
+        sed 's/^/      /' "$log"
+        systemctl restart octane 2>/dev/null || systemctl reload octane 2>/dev/null || \
+            echo "   >> octane no reiniciado (reinicia manual: sudo systemctl restart octane)."
+    else
+        sed 's/^/      /' "$log"
+        echo "   ⚠️  config:cache FALLÓ. NO se reinicia octane (config anterior sigue activo)."
+        echo "      Revisa .env sintaxis: sudo -u $owner bash -lc 'cd $LARAVEL_DIR && php artisan config:clear'"
+    fi
+    rm -f "$log"
+}
+
 # Email opcional para alertas futuras (placeholder, no se usar mail aquí).
 read -rp "5. Email para alertas de seguridad (Enter=omitir, solo log a fichero): " REPORT_EMAIL
 REPORT_EMAIL="${REPORT_EMAIL:-}"
 
 # ------------------------------------------------------------------------------
+# 0.5 PREFLIGHT RELOJ (chrony) — sin sync, GPG signature "not alive yet"
+# ------------------------------------------------------------------------------
+# Causa raíz: packagecloud (CrowdSec) y PGDG firman repomd.xml con timestamp
+# "not before" marginalmente futuro. Si reloj local va atrasado (VM VBox NAT,
+# NTP UDP bloqueado), verificación GPG falla con "signature is not alive" y
+# `dnf install` aborta. Idéntico patrón que setup.sh:118-159.
+# TCP 443 pasa VBox NAT; NTP UDP 123 no. Sincroniza por HTTP Date header
+# (RFC 7231, `date -s` acepta) como respaldo si chrony no arranca.
+DATE_STR=$(curl -sI --max-time 5 https://www.cloudflare.com/ 2>/dev/null \
+           | awk -F': ' 'tolower($1)=="date"{print $2; exit}')
+if [ -n "$DATE_STR" ]; then
+    date -s "$DATE_STR" &>/dev/null || true
+fi
+if ! command -v chronyc &>/dev/null; then
+    dnf install -y chrony 2>/dev/null || true
+fi
+systemctl enable --now chronyd 2>/dev/null || true
+chronyc -a makestep &>/dev/null || true
+
+# ------------------------------------------------------------------------------
 # 1. HARDENING DE KERNEL + SYSCTL AGRESIVO (IPv4 + IPv6 + fs.* + kernel.* + bpf)
 # ------------------------------------------------------------------------------
-echo ">> [1/24] Aplicando Hardening de Kernel y mitigación de OS-Fingerprinting..."
+echo ">> [1/30] Aplicando Hardening de Kernel y mitigación de OS-Fingerprinting..."
 cat << 'EOF' > /etc/sysctl.d/99-security-hardening.conf
 # === IPv4 ===
 net.ipv4.icmp_echo_ignore_broadcasts = 1
@@ -151,7 +195,7 @@ sysctl -w net.core.bpf_jit_harden=2 &>/dev/null || true
 # ------------------------------------------------------------------------------
 # 2. BASTIONADO SSH AVANZADO (crypto moderno + anti-pivote + protege estado 2FA)
 # ------------------------------------------------------------------------------
-echo ">> [2/24] Bastionando SSH (drop-in 00-hardening.conf)..."
+echo ">> [2/30] Bastionando SSH (drop-in 00-hardening.conf)..."
 dnf install -y epel-release
 
 TS=$(date +%s)
@@ -268,7 +312,7 @@ echo "   >> Para desactivarla:  sudo bash 2fa.sh --off"
 # ------------------------------------------------------------------------------
 # 3. FIREWALLD: ZONA PUBLIC ESTABLE + ACCESO ESTRICTO
 # ------------------------------------------------------------------------------
-echo ">> [3/24] Configurando reglas de Firewalld..."
+echo ">> [3/30] Configurando reglas de Firewalld..."
 firewall-cmd --set-default-zone=public &>/dev/null || true
 firewall-cmd --permanent --remove-service=ssh &>/dev/null || true
 firewall-cmd --permanent --remove-port=22/tcp &>/dev/null || true
@@ -281,7 +325,7 @@ firewall-cmd --reload &>/dev/null
 # ------------------------------------------------------------------------------
 # 4. FAIL2BAN REFUERZO (ignore IP propia + recidive + jails nginx)
 # ------------------------------------------------------------------------------
-echo ">> [4/24] Configurando Fail2ban (refuerzo)..."
+echo ">> [4/30] Configurando Fail2ban (refuerzo)..."
 dnf install -y fail2ban fail2ban-systemd
 
 mkdir -p /var/log/nginx
@@ -333,19 +377,50 @@ systemctl enable --now fail2ban
 # ------------------------------------------------------------------------------
 # 5. CROWDSEC + COLECCIONES ANTI-PORTSCAN/SSH/NGINX
 # ------------------------------------------------------------------------------
-echo ">> [5/24] Instalando CrowdSec..."
-curl -s https://install.crowdsec.net | bash &>/dev/null
-dnf install -y crowdsec crowdsec-firewall-bouncer-nftables &>/dev/null || true
-cscli collection install crowdsecurity/nginx &>/dev/null || true
-cscli collection install crowdsecurity/sshd &>/dev/null || true
-cscli collection install crowdsecurity/iptables &>/dev/null || true
-systemctl restart crowdsec || true
+echo ">> [5/30] Instalando CrowdSec..."
+# (a) Instalador oficial añade repo packagecloud + importa llave RPM.
+curl -s https://install.crowdsec.net | bash &>/dev/null || true
+# (b) repo_gpgcheck=0 en .repo de packagecloud (mismo patrón que PGDG en
+#     setup.sh:204-207). packagecloud firma repomd.xml con timestamp "not
+#     before" futuro; si reloj local va atrasado, GPG lo rechaza y `dnf`
+#     aborta. gpgcheck de PAQUETES sigue activo (llave RPM ya importada
+#     por el instalador en (a)).
+# (c) skip_if_unavailable=1 evita que caídas posteriores del repo crowdsec
+#     maten otros `dnf install` (ClamAV, AIDE, audit, etc.): si el repo
+#     vuelve a fallar de metadata, dnf lo salta en lugar de abortar todo.
+if ls /etc/yum.repos.d/*crowdsec*.repo &>/dev/null; then
+    sed -i -E 's/^[[:space:]]*repo_gpgcheck[[:space:]]*=[[:space:]]*1/repo_gpgcheck=0/g' \
+        /etc/yum.repos.d/*crowdsec*.repo 2>/dev/null || true
+    for r in /etc/yum.repos.d/*crowdsec*.repo; do
+        [ -f "$r" ] || continue
+        grep -qE '^[[:space:]]*skip_if_unavailable[[:space:]]*=' "$r" \
+            || printf '\nskip_if_unavailable=1\n' >> "$r"
+    done
+fi
+# (d) --setopt refuerza repo_gpgcheck=0 por si la línea del .repo no aplica
+#     (dnf a veces cachea metadata de instalador previo). --nogpgcheck
+#     desactiva verificación de PAQUETE; combinado con (a) llave importada
+#     es seguro. Si CrowdSec no acaba de instalarse, NO abortar script.
+dnf install -y --setopt='crowdsec_crowdsec.repo_gpgcheck=0' --nogpgcheck \
+    crowdsec crowdsec-firewall-bouncer-nftables &>/dev/null || true
+# (e) cscli sólo si el binario existe (no asumir que el install tuvo éxito).
+if command -v cscli &>/dev/null; then
+    cscli collection install crowdsecurity/nginx     &>/dev/null || true
+    cscli collection install crowdsecurity/sshd      &>/dev/null || true
+    cscli collection install crowdsecurity/iptables  &>/dev/null || true
+fi
+# (f) systemd: enable --now arranca el servicio aunque no estuviera cargado
+#     (mejor que `restart` sola). Guard con list-unit-files evita el stderr
+#     ruidoso "Unit crowdsec.service not found" cuando el install falló.
+if systemctl list-unit-files 2>/dev/null | grep -q '^crowdsec\.service'; then
+    systemctl enable --now crowdsec 2>/dev/null || true
+fi
 
 # ------------------------------------------------------------------------------
 # 6. HARDENING NGINX + CLOUDFLARE IPS + BLOQUEO /.ENV
 # ------------------------------------------------------------------------------
 if [ -d /etc/nginx/conf.d ]; then
-    echo ">> [6/24] Configurando Nginx con soporte Cloudflare y Hardening..."
+    echo ">> [6/30] Configurando Nginx con soporte Cloudflare y Hardening..."
 
     echo "real_ip_header CF-Connecting-IP;" > /etc/nginx/conf.d/cloudflare.conf
     curl -s https://www.cloudflare.com/ips-v4 | while read ip; do
@@ -398,7 +473,7 @@ fi
 # 7. NGINX TLS MODERNO + HEADERS EXTRA + RATE LIMITING
 # ------------------------------------------------------------------------------
 if [ -d /etc/nginx/conf.d ]; then
-    echo ">> [7/24] Aplicando TLS moderno + CSP + rate-limits Nginx..."
+    echo ">> [7/30] Aplicando TLS moderno + CSP + rate-limits Nginx..."
 
     CIPHERS='ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256'
 
@@ -443,7 +518,7 @@ fi
 # ------------------------------------------------------------------------------
 # 8. ANTIMALWARE: CLAMAV + RKHUNTER
 # ------------------------------------------------------------------------------
-echo ">> [8/24] Instalando ClamAV y Rkhunter..."
+echo ">> [8/30] Instalando ClamAV y Rkhunter..."
 dnf install -y rkhunter || true
 if ! dnf install -y --enablerepo=epel-testing clamav clamav-update clamd &>/dev/null; then
     echo "AVISO: epel-testing no disponible o falla; instalando ClamAV estable de EPEL."
@@ -465,13 +540,13 @@ rkhunter --propupd || true
 # ------------------------------------------------------------------------------
 # 9. PERSISTENCIA ROOTLESS (LINGER)
 # ------------------------------------------------------------------------------
-echo ">> [9/24] Configurando Linger para '$SSH_USER'..."
+echo ">> [9/30] Configurando Linger para '$SSH_USER'..."
 loginctl enable-linger "$SSH_USER" || true
 
 # ------------------------------------------------------------------------------
 # 10. PANEL DE AUDITORÍA 'sec-logs' AMPLIADO
 # ------------------------------------------------------------------------------
-echo ">> [10/24] Configurando panel de auditoría 'sec-logs'..."
+echo ">> [10/30] Configurando panel de auditoría 'sec-logs'..."
 cat << 'EOF' > /usr/local/bin/sec-logs
 #!/bin/bash
 echo -e "\n======================================================="
@@ -507,6 +582,45 @@ ls -l /var/lib/aide/aide.db.gz 2>/dev/null || echo "AIDE no inicializada (ejecut
 
 echo -e "\n\e[1;34m[+] USBGuard\e[0m"
 systemctl is-active usbguard 2>/dev/null || echo "USBGuard no activo (podría no aplicar en VPS)."
+
+echo -e "\e[1;36m[+] PHP CLI HARDENING (v3)\e[0m"
+if [ -f /etc/php.d/99-hardening.conf ] || [ -f /etc/php.d/99-hardening.ini ]; then
+    echo "  Drop-in:    $(ls /etc/php.d/99-hardening.* 2>/dev/null | head -1)"
+    echo "  disable_fn: $(awk -F'= ' '/^disable_functions/{print $2}' /etc/php.d/99-hardening.* 2>/dev/null | head -1)"
+else
+    echo "  PHP CLI drop-in NO creado (seccion 25 skip)."
+fi
+
+echo -e "\e[1;36m[+] REDIS ACL (v3)\e[0m"
+if [ -f /etc/redis/users.acl ]; then
+    echo "  ACL users: $(grep -c '^user ' /etc/redis/users.acl) ($(awk '/^user /{print $2"="$3}' /etc/redis/users.acl | tr '\n' ' '))"
+    echo "  aclfile:    $(awk '/^aclfile /{print $2}' /etc/redis/redis.conf 2>/dev/null)"
+else
+    echo "  ACL file no creado (seccion 29 no aplico)."
+fi
+
+echo -e "\e[1;36m[+] POSTGRESQL HARDENING (v3)\e[0m"
+if systemctl is-active --quiet postgresql-18 2>/dev/null; then
+    echo "  pg_stat_statements: $(sudo -u postgres psql -At -d postgres -c "SELECT extname FROM pg_extension WHERE extname='pg_stat_statements';" 2>/dev/null | head -1 || echo 'NO instalada')"
+    echo "  slow log >250ms:    $(sudo -u postgres psql -At -c "SHOW log_min_duration_statement;" 2>/dev/null | head -1)"
+    echo "  Top 5 queries (mean ms):"
+    sudo -u postgres psql -d postgres -At -c "SELECT substring(query,1,60)||' | calls='||calls::text||' | mean_ms='||round(mean_exec_time::numeric,2)::text FROM pg_stat_statements ORDER BY mean_exec_time DESC LIMIT 5;" 2>/dev/null | sed 's/^/    /' || echo "    (extension no cargada aun)"
+else
+    echo "  PostgreSQL no activo."
+fi
+
+echo -e "\e[1;36m[+] WAF MODSECURITY (v3)\e[0m"
+if [ -f /etc/nginx/modsec/modsecurity.conf ]; then
+    echo "  Engine:    $(awk '/^SecRuleEngine/{print $2}' /etc/nginx/modsec/modsecurity.conf 2>/dev/null)"
+    echo "  CRS dir:   $(ls -d /etc/nginx/modsec/owasp-crs 2>/dev/null || echo 'NO descargado')"
+    echo "  Audit log: $(wc -l /var/log/modsec/audit.log 2>/dev/null | awk '{print $1" lineas"}' || echo 'vacio/inexistente')"
+    if [ -s /var/log/modsec/audit.log ]; then
+        echo "  Top 5 rules disparadas:"
+        grep -oE 'id "[0-9]+"' /var/log/modsec/audit.log 2>/dev/null | sort | uniq -c | sort -rn | head -5 | sed 's/^/    /' || true
+    fi
+else
+    echo "  WAF no instalado (ejecuta 'sudo bash waf.sh')."
+fi
 
 echo -e "\n\e[1;34m[+] BACKUPS (sistema .system-state)\e[0m"
 if [ -f /var/lib/.system-state/logs/state.txt ]; then
@@ -549,7 +663,7 @@ visudo -c &>/dev/null || { echo "Error en sintaxis sudoers"; exit 1; }
 # ------------------------------------------------------------------------------
 # 11. AIDE (CONTROL DE INTEGRIDAD DE ARCHIVOS)
 # ------------------------------------------------------------------------------
-echo ">> [11/24] Inicializando base de datos de integridad AIDE..."
+echo ">> [11/30] Inicializando base de datos de integridad AIDE..."
 dnf install -y aide
 aide --init || true
 if [ -f /var/lib/aide/aide.db.new.gz ]; then
@@ -559,7 +673,7 @@ fi
 # ------------------------------------------------------------------------------
 # 12. REDIS HARDENING (bind localhost + protected-mode + requirepass + rename-cmd)
 # ------------------------------------------------------------------------------
-echo ">> [12/24] Endureciendo Redis..."
+echo ">> [12/30] Endureciendo Redis..."
 REDIS_CONF=/etc/redis/redis.conf
 if [ ! -f "$REDIS_CONF" ]; then
     echo "   ⚠️  $REDIS_CONF no existe. ¿Instalado Redis? Skip."
@@ -610,14 +724,14 @@ EOF
         chown "$ENV_OWNER" "$LARAVEL_DIR/.env"
         chmod 600 "$LARAVEL_DIR/.env"
         echo "   >> .env actualizado (REDIS_PASSWORD + chmod 600)."
-        systemctl restart octane 2>/dev/null || echo "   >> octane no reiniciado (servicio ausente o fallido). Reinicia manual."
+        recache_laravel
     fi
 fi
 
 # ------------------------------------------------------------------------------
 # 13. MODPROBE BLACKLIST (filesystems raros + protocolos obsoletos)
 # ------------------------------------------------------------------------------
-echo ">> [13/24] Blacklist módulos kernel inseguros o innecesarios..."
+echo ">> [13/30] Blacklist módulos kernel inseguros o innecesarios..."
 cat << 'EOF' > /etc/modprobe.d/CIS-blacklist.conf
 # Filesystems infrecuentes (vector de explotación local).
 install cramfs /bin/true
@@ -640,7 +754,7 @@ EOF
 # ------------------------------------------------------------------------------
 # 14. SYSTEMD-COREDUMP OFF (evita dumps con secretos en disco)
 # ------------------------------------------------------------------------------
-echo ">> [14/24] Desactivando systemd-coredump..."
+echo ">> [14/30] Desactivando systemd-coredump..."
 mkdir -p /etc/systemd/coredump.conf.d
 cat << 'EOF' > /etc/systemd/coredump.conf.d/hardening.conf
 [Coredump]
@@ -652,7 +766,7 @@ systemctl daemon-reload 2>/dev/null || true
 # ------------------------------------------------------------------------------
 # 15. TMPFS HARDENING (/dev/shm noexec/nosuid/nodev, /var/tmp nosuid/nodev)
 # ------------------------------------------------------------------------------
-echo ">> [15/24] Endureciendo tmpfs..."
+echo ">> [15/30] Endureciendo tmpfs..."
 # /dev/shm: tmpfs by default en RHEL; endurecerlo.
 if ! grep -qE '^[^#]*[[:space:]]/dev/shm' /etc/fstab; then
     echo 'tmpfs /dev/shm tmpfs defaults,nosuid,nodev,noexec 0 0' >> /etc/fstab
@@ -688,7 +802,7 @@ fi
 # ------------------------------------------------------------------------------
 # 16. AUDITD + REGLAS REALTIME (identity, sudoers, sshd, audit_logs)
 # ------------------------------------------------------------------------------
-echo ">> [16/24] Configurando auditd con reglas de monitoreo realtime..."
+echo ">> [16/30] Configurando auditd con reglas de monitoreo realtime..."
 dnf install -y audit 2>/dev/null || true
 systemctl enable --now auditd 2>/dev/null || true
 
@@ -724,7 +838,7 @@ systemctl restart auditd 2>/dev/null || true
 # ------------------------------------------------------------------------------
 # 17. DNF-AUTOMATIC (PARCHES DE SEGURIDAD AUTOMÁTICOS)
 # ------------------------------------------------------------------------------
-echo ">> [17/24] Configurando dnf-automatic (security-only)..."
+echo ">> [17/30] Configurando dnf-automatic (security-only)..."
 dnf install -y dnf-automatic 2>/dev/null || true
 if [ -f /etc/dnf/automatic.conf ]; then
     cp -a /etc/dnf/automatic.conf "/etc/dnf/automatic.conf.bak.$TS"
@@ -745,7 +859,7 @@ fi
 # Siquieres SSL en PG para conexiones remotas: configura ssl_cert_file /
 # ssl_key_file en /var/lib/pgsql/18/data/postgresql.conf manualmente y luego
 # `ALTER SYSTEM SET ssl = on;` (requiere restart).
-echo ">> [18/24] Endureciendo PostgreSQL..."
+echo ">> [18/30] Endureciendo PostgreSQL..."
 if systemctl is-active --quiet postgresql-18 2>/dev/null; then
     # password_encryption es recargable (SIGHUP); afecta a NUEVAS contraseñas.
     sudo -u postgres psql -c "ALTER SYSTEM SET password_encryption = 'scram-sha-256';" 2>/dev/null || true
@@ -768,7 +882,7 @@ fi
 # ------------------------------------------------------------------------------
 # 19. PWQUALITY + LOGIN.DEFS (política contraseñas locales + UMASK 027)
 # ------------------------------------------------------------------------------
-echo ">> [19/24] Política de contraseñas + UMASK + login.defs..."
+echo ">> [19/30] Política de contraseñas + UMASK + login.defs..."
 dnf install -y libpwquality 2>/dev/null || true
 if [ -f /etc/security/pwquality.conf ] || [ -d /etc/security ]; then
     cat << 'EOF' > /etc/security/pwquality.conf
@@ -807,7 +921,7 @@ set_ld_var ENCRYPT_METHOD YESCRYPT
 # ------------------------------------------------------------------------------
 # 20. DESHABILITAR SERVICIOS INNECESARIOS (reduce superficie monstruo)
 # ------------------------------------------------------------------------------
-echo ">> [20/24] Deshabilitando servicios innecesarios..."
+echo ">> [20/30] Deshabilitando servicios innecesarios..."
 for svc in avahi-daemon cups nfs-server rpcbind smb nmb tftp xinetd bluetooth telnet.socket rsh.socket rexec.socket rlogin.socket; do
     systemctl disable --now "$svc" 2>/dev/null || true
     systemctl mask "$svc" 2>/dev/null || true
@@ -817,7 +931,7 @@ echo "   >> (Best-effort; servicios ausentes no generan error.)"
 # ------------------------------------------------------------------------------
 # 21. USBGUARD (condicional según virtualización)
 # ------------------------------------------------------------------------------
-echo ">> [21/24] USBGuard (control de dispositivos USB)..."
+echo ">> [21/30] USBGuard (control de dispositivos USB)..."
 VIRT_TYPE=$(systemd-detect-virt 2>/dev/null || echo "none")
 case "$VIRT_TYPE" in
     kvm|qemu|xen|lxc|container|microsoft|oracle|vmware)
@@ -841,7 +955,7 @@ esac
 # ------------------------------------------------------------------------------
 # 22. GRUB PASSWORD (OPT-IN: NO recomendado en VPS sin consola propia)
 # ------------------------------------------------------------------------------
-echo ">> [22/24] GRUB password..."
+echo ">> [22/30] GRUB password..."
 VIRT_FOR_GRUB=$(systemd-detect-virt 2>/dev/null || echo "none")
 DEFAULT_GRUB_RESP="N"
 if [[ "$VIRT_FOR_GRUB" == "none" ]]; then
@@ -889,7 +1003,7 @@ fi
 # ------------------------------------------------------------------------------
 # 23. CRON DIARIO: SCAN SECURITY (rkhunter + AIDE + ClamAV → log)
 # ------------------------------------------------------------------------------
-echo ">> [23/24] Cron diario de escaneo de seguridad..."
+echo ">> [23/30] Cron diario de escaneo de seguridad..."
 cat << 'EOF' > /etc/cron.daily/99-security-scan
 #!/bin/bash
 # Escaneo de seguridad diario - generado por secure.sh (v2)
@@ -940,7 +1054,7 @@ chmod +x /etc/cron.daily/99-security-scan
 # ------------------------------------------------------------------------------
 # 24. SUDO HARDENING PARA $SSH_USER (use_pty + timeout + logfile)
 # ------------------------------------------------------------------------------
-echo ">> [24/24] Endureciendo sudo para '$SSH_USER'..."
+echo ">> [24/30] Endureciendo sudo para '$SSH_USER'..."
 SUDO_FILE=/etc/sudoers.d/99-$SSH_USER-hardening
 # Escribir a un temporal y validar con visudo -cf ANTES de mover al destino.
 # Si la sintaxis falla (p.ej. $SSH_USER raro), no deja un sudoers roto.
@@ -966,6 +1080,246 @@ fi
 touch /var/log/sudo-$SSH_USER.log 2>/dev/null || true
 chown root:root /var/log/sudo-$SSH_USER.log 2>/dev/null || true
 chmod 600 /var/log/sudo-$SSH_USER.log 2>/dev/null || true
+
+# ==============================================================================
+# FASE ANTI-ATAQUES WEB (defense-in-depth) — secciones 25-30
+# Añadidas v3. Cambio único, reversible (clear.sh sección 17 revierte).
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 25/30 PHP CLI INI HARDENING (drop-in /etc/php.d — NO toca FrankenPHP embed)
+# ------------------------------------------------------------------------------
+echo ">> [25/30] Endureciendo PHP CLI (/etc/php.d/99-hardening.ini)..."
+# El binario estático FrankenPHP embebe su propio PHP 8.4 + exts; este drop-in
+# solo afecta al PHP del sistema (artisan/composer). FrankenPHP queda intacto.
+PHP_INI_DROP=/etc/php.d/99-hardening.ini
+if [ -d /etc/php.d ]; then
+    # Re-escritura idempotente del drop-in (sin append duplicado).
+    cat << 'EOF' > "$PHP_INI_DROP"
+; === añadido por secure.sh v3 — hardening PHP CLI ===
+; FrankenPHP NO se ve afectado (embeds propio PHP 8.4).
+expose_php = Off
+display_errors = Off
+log_errors = On
+error_log = /var/log/php_errors.log
+upload_max_filesize = 20M
+post_max_size = 25M
+memory_limit = 256M
+max_execution_time = 30
+session.cookie_httponly = 1
+session.cookie_secure = 1
+session.cookie_samesite = Lax
+session.use_strict_mode = 1
+session.entropy_length = 32
+session.gc_maxlifetime = 1440
+; disable_functions: NO incluye proc_open (rompe Symfony Process + Queue worker).
+disable_functions = exec,passthru,shell_exec,system,popen
+EOF
+    touch /var/log/php_errors.log 2>/dev/null || true
+    chmod 640 /var/log/php_errors.log 2>/dev/null || true
+    restorecon -v "$PHP_INI_DROP" 2>/dev/null || true
+else
+    echo "   ⚠️  /etc/php.d no existe. PHP CLI no instalado. Skip."
+fi
+
+# ------------------------------------------------------------------------------
+# 26/30 NGINX SLOWLORIS + BODY LIMITS + TIMEOUTS
+# ------------------------------------------------------------------------------
+if [ -d /etc/nginx/conf.d ]; then
+    echo ">> [26/30] Endureciendo timeouts y límites de cuerpo Nginx..."
+    cat << 'EOF' > /etc/nginx/conf.d/00-timeouts.conf
+# === añadido por secure.sh v3 — anti slowloris + body limits ===
+client_body_timeout 30s;
+client_header_timeout 30s;
+client_body_buffer_size 16k;
+client_max_body_size 20m;
+send_timeout 30s;
+# Respuestas 429 para limitados (más amable que 503).
+limit_req_status 429;
+limit_conn_status 429;
+EOF
+    # Aplicar limit_conn global por servidor: inyectar en snippets existentes.
+    # La zona conn_limit ya está definida en 00-rate-limits.conf (sección 7).
+fi
+
+# ------------------------------------------------------------------------------
+# 27/30 NGINX limit_except (block TRACE/TRACK) + limit_req por location
+# ------------------------------------------------------------------------------
+if [ -d /etc/nginx/conf.d ]; then
+    echo ">> [27/30] Bloqueo métodos TRACE/TRACK + rate-limit por location..."
+
+    # Mapa http-level: marca métodos peligrosos (XST vector). Permite
+    # GET/POST/HEAD/OPTIONS/PUT/DELETE (API REST y Livewire/Filament los usan).
+    cat << 'EOF' > /etc/nginx/conf.d/00-method-block.conf
+# === añadido por secure.sh v3 — bloqueo TRACE/TRACK (XST) ===
+map $request_method $bad_method {
+    default 0;
+    TRACE 1;
+    TRACK 1;
+}
+EOF
+
+    # Snippet con locations rate-limited para rutas sensibles (login/reset/api/auth).
+    # Inyectar dentro de cada server 443 (idempotente, antes de location /).
+    cat << 'EOF' > /etc/nginx/snippets/rate-limited-routes.conf
+# === Rate-limit rutas sensibles (secure.sh v3) ===
+location ~ ^/(login|admin/login|password/reset|api/auth) {
+    limit_req zone=req_limit burst=5 nodelay;
+    limit_conn conn_limit 5;
+    proxy_pass http://127.0.0.1:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+location /api {
+    limit_req zone=req_limit burst=20 nodelay;
+    limit_conn conn_limit 10;
+}
+EOF
+
+    # Snippet con bloqueo de método + limit_conn global por server.
+    cat << 'EOF' > /etc/nginx/snippets/method-guard.conf
+# === secure.sh v3: bloqueo TRACE/TRACK + limit_conn 20 por IP ===
+if ($bad_method) { return 405; }
+limit_conn conn_limit 20;
+EOF
+
+    # Inyectar includes en server 443 (no http). Idempotente: grep antes de insert.
+    for f in /etc/nginx/conf.d/*.conf; do
+        [ -f "$f" ] || continue
+        case "$f" in *00-*|*99-security-headers*) continue;; esac
+        # Solo vhost con listen 443 (evita inyectar en redirect 80).
+        grep -q 'listen .*443' "$f" 2>/dev/null || continue
+        grep -q 'snippets/rate-limited-routes.conf' "$f" 2>/dev/null && continue
+        # Insertar tras la apertura del primer server 443.
+        sed -i -E '0,/^server[[:space:]]*\{/{s|^server[[:space:]]*\{|server {\n    include /etc/nginx/snippets/method-guard.conf;\n    include /etc/nginx/snippets/rate-limited-routes.conf;|}' "$f"
+    done
+
+    if ! nginx -t 2>/tmp/nginx_err3; then
+        echo "   ⚠️  AVISO: nginx -t falló (sección 27). Detalle:"
+        cat /tmp/nginx_err3
+    else
+        systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+    fi
+fi
+
+# ------------------------------------------------------------------------------
+# 28/30 CABECERAS CROSS-ORIGIN EXTRA (COEP/CORP)
+# ------------------------------------------------------------------------------
+if [ -d /etc/nginx/conf.d ]; then
+    echo ">> [28/30] Añadiendo cabeceras COEP/CORP (cross-origin isolation)..."
+    EXTRA_HDR=/etc/nginx/conf.d/00-sec-extra-headers.conf
+    if [ -f "$EXTRA_HDR" ]; then
+        # Idempotente: solo añadir si no están ya.
+        if ! grep -q 'Cross-Origin-Embedder-Policy' "$EXTRA_HDR" 2>/dev/null; then
+            # COEP credentialless: permite recursos no-cors sin CORP (más seguro
+            # que require-corp, no rompe assets Cloudflare/Filament third-party).
+            cat << 'EOF' >> "$EXTRA_HDR"
+add_header Cross-Origin-Embedder-Policy "credentialless" always;
+add_header Cross-Origin-Resource-Policy "same-origin" always;
+EOF
+        fi
+        # COOP ya está en 99-security-headers.conf (sección 6). No duplicar.
+        if ! nginx -t 2>/tmp/nginx_err4; then
+            echo "   ⚠️  AVISO: nginx -t falló (sección 28 COEP). Detalle:"
+            cat /tmp/nginx_err4
+        else
+            systemctl reload nginx 2>/dev/null || true
+        fi
+    fi
+fi
+
+# ------------------------------------------------------------------------------
+# 29/30 REDIS ACL FILE (aclfile) — coexiste con rename-command legacy
+# ------------------------------------------------------------------------------
+if [ -f /etc/redis/redis.conf ]; then
+    echo ">> [29/30] Configurando Redis ACL (aclfile + coexist rename-command)..."
+    REDIS_APP_PASS=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    REDIS_ACL=/etc/redis/users.acl
+
+    # ACL file: default (admin/CLI) + laravel (app least-privilege).
+    # -@dangerous cubre FLUSHALL/FLUSHDB/CONFIG/KEYS/SHUTDOWN/DEBUG → coexiste
+    # sin choque con rename-command "" (ambos rechazan, seguro).
+    cat << EOF > "$REDIS_ACL"
+# === añadido por secure.sh v3 — ACL users ===
+user default on >$REDIS_PASS ~* +@all -@dangerous
+user laravel on >$REDIS_APP_PASS ~* +@all -@dangerous
+EOF
+    chmod 640 "$REDIS_ACL"
+    chown redis:redis "$REDIS_ACL" 2>/dev/null || chown redis:root "$REDIS_ACL" 2>/dev/null || true
+    restorecon -v "$REDIS_ACL" 2>/dev/null || true
+
+    # Idempotente: quitar aclfile previo y añadir el nuevo.
+    sed -i -E '/^aclfile[[:space:]]+/d' /etc/redis/redis.conf 2>/dev/null || true
+    printf '\n# === añadido por secure.sh (v3) ===\naclfile %s\n' "$REDIS_ACL" >> /etc/redis/redis.conf
+
+    systemctl restart redis 2>/dev/null || true
+
+    # Parchear Laravel .env con REDIS_USERNAME=laravel + REDIS_PASSWORD=app pass.
+    if [[ -n "$LARAVEL_DIR" && -f "$LARAVEL_DIR/.env" ]]; then
+        TMP_ENV=$(mktemp)
+        grep -v -E '^REDIS_USERNAME=|^REDIS_PASSWORD=' "$LARAVEL_DIR/.env" > "$TMP_ENV" || true
+        printf 'REDIS_USERNAME=laravel\nREDIS_PASSWORD=%s\n' "$REDIS_APP_PASS" >> "$TMP_ENV"
+        ENV_OWNER=$(stat -c '%U:%G' "$LARAVEL_DIR/.env" 2>/dev/null || echo "laravel:laravel")
+        cp "$TMP_ENV" "$LARAVEL_DIR/.env"
+        rm -f "$TMP_ENV"
+        chown "$ENV_OWNER" "$LARAVEL_DIR/.env"
+        chmod 600 "$LARAVEL_DIR/.env"
+        echo "   >> .env actualizado (REDIS_USERNAME=laravel + REDIS_PASSWORD=app)."
+        echo "   🔑 Redis APP password (gárdala aparte):"
+        echo "      $REDIS_APP_PASS"
+        recache_laravel
+    else
+        echo "   >> .env no parcheado (Laravel no detectado). Configura REDIS_USERNAME=laravel a mano."
+        echo "   🔑 Redis APP password (configúrala en .env): $REDIS_APP_PASS"
+    fi
+fi
+
+# ------------------------------------------------------------------------------
+# 30/30 POSTGRESQL LEAST-PRIVILEGE + pg_stat_statements + slow query log
+# ------------------------------------------------------------------------------
+if systemctl is-active --quiet postgresql-18 2>/dev/null; then
+    echo ">> [30/30] PostgreSQL least-privilege + pg_stat_statements + slow log..."
+
+    # Detectar DB name desde .env (fallback laravel1).
+    PG_APP_DB="laravel1"
+    if [[ -n "$LARAVEL_DIR" && -f "$LARAVEL_DIR/.env" ]]; then
+        PG_APP_DB=$(awk -F= '/^DB_DATABASE=/{print $2; exit}' "$LARAVEL_DIR/.env" 2>/dev/null)
+        PG_APP_DB="${PG_APP_DB:-laravel1}"
+        if ! [[ "$PG_APP_DB" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "   ⚠️  DB_DATABASE '$PG_APP_DB' inválido. Uso laravel1."
+            PG_APP_DB="laravel1"
+        fi
+    fi
+
+    # REVOKE CREATE ON SCHEMA public FROM PUBLIC (solo afecta no-app users).
+    # Opción A: no rompe migrate (app user con GRANT ALL sigue teniendo CREATE).
+    sudo -u postgres psql -d "$PG_APP_DB" -c "REVOKE CREATE ON SCHEMA public FROM PUBLIC;" 2>/dev/null || true
+    sudo -u postgres psql -c "REVOKE ALL ON DATABASE postgres FROM PUBLIC;" 2>/dev/null || true
+
+    # pg_stat_statements: requiere shared_preload_libraries + restart.
+    CURRENT_PRELOAD=$(sudo -u postgres psql -At -c "SHOW shared_preload_libraries;" 2>/dev/null || echo "")
+    if ! echo "$CURRENT_PRELOAD" | grep -q 'pg_stat_statements'; then
+        NEW_PRELOAD="pg_stat_statements"
+        [ -n "$CURRENT_PRELOAD" ] && NEW_PRELOAD="${CURRENT_PRELOAD},${NEW_PRELOAD}"
+        sudo -u postgres psql -c "ALTER SYSTEM SET shared_preload_libraries = '${NEW_PRELOAD}';" 2>/dev/null || true
+        echo "   >> Reiniciando PostgreSQL para cargar pg_stat_statements (breve downtime)..."
+        systemctl restart postgresql-18 2>/dev/null || true
+    fi
+
+    # Slow query log + log prefix.
+    sudo -u postgres psql -c "ALTER SYSTEM SET log_min_duration_statement = '250ms';" 2>/dev/null || true
+    sudo -u postgres psql -c "ALTER SYSTEM SET log_line_prefix = '%m [%p] %u@%d ';" 2>/dev/null || true
+    sudo systemctl reload postgresql-18 2>/dev/null || true
+
+    # Crear extensión (tras restart si aplica).
+    sudo -u postgres psql -d "$PG_APP_DB" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null || true
+    echo "   >> REVOKE public schema + pg_stat_statements + slow log (>250ms) aplicados."
+else
+    echo ">> [30/30] PostgreSQL no activo. Skip least-privilege + pg_stat_statements."
+fi
 
 # ------------------------------------------------------------------------------
 # RESUMEN FINAL
@@ -1007,11 +1361,25 @@ echo "  - ClamAV:        freshclam + cron scan /var/www /home /tmp"
 echo "  - Rkhunter:      --propupd + cron report-warnings-only"
 echo "  - Cron diario:   /etc/cron.daily/99-security-scan → /var/log/security-scan.log"
 echo "  - Audit panel:   sudo sec-logs"
+echo " [FASE ANTI-ATAQUES WEB v3]"
+echo "  - PHP CLI:      /etc/php.d/99-hardening.ini (disable_functions sin proc_open)"
+echo "  - FrankenPHP:   NO tocado (embeds propio PHP 8.4)"
+echo "  - Nginx:        slowloris timeouts + body 20m + block TRACE/TRACK + limit_conn 20"
+echo "  - Nginx rate:   limit_req rutas sensibles (login/reset/api/auth burst=5 nodelay)"
+echo "  - Nginx hdrs:   COEP credentialless + CORP same-origin (+ COOP de sec6)"
+echo "  - Redis ACL:    aclfile /etc/redis/users.acl (default + laravel) coex rename-command"
+echo "  - PostgreSQL:   REVOKE public schema + pg_stat_statements + slow log >250ms"
+echo "  - Sec-logs:     ampliado con secciones WAF/PHP/PG (ver waf.sh hook)"
 echo " [CREDENCIALES]"
 if [[ -n "$REDIS_PASS" ]]; then
-    echo "  🔑 Redis password:"
+    echo "  🔑 Redis password (admin/default):"
     echo "     $REDIS_PASS"
-    echo "     (guardada en $REDIS_CONF, Laravel .env actualizado en ${LARAVEL_DIR:-<no-detectado>})"
+    echo "     (guardada en $REDIS_CONF)"
+    if [[ -n "${REDIS_APP_PASS:-}" ]]; then
+        echo "  🔑 Redis password (app/laravel user):"
+        echo "     $REDIS_APP_PASS"
+        echo "     (en .env REDIS_USERNAME=laravel + REDIS_PASSWORD)"
+    fi
 fi
 if [[ -n "$REPORT_EMAIL" ]]; then
     echo "  📧 Alertas a: $REPORT_EMAIL"

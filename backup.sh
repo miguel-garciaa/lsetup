@@ -213,6 +213,16 @@ KEYRING_LIST=$(mktemp)
     [ -f /etc/cron.d/backup ] && echo /etc/cron.d/backup
     [ -f /etc/cron.daily/99-security-scan ] && echo /etc/cron.daily/99-security-scan
     [ -d /var/lib/pgsql/18/data ] && [ -f /var/lib/pgsql/18/data/postgresql.conf ] && echo /var/lib/pgsql/18/data/postgresql.conf
+    # === Fase anti-ataques web v3 (secure.sh sec 25-30 + waf.sh + laravel-harden.sh) ===
+    [ -f /etc/php.d/99-hardening.ini ] && echo /etc/php.d/99-hardening.ini
+    [ -f /etc/nginx/conf.d/00-timeouts.conf ] && echo /etc/nginx/conf.d/00-timeouts.conf
+    [ -f /etc/nginx/conf.d/00-method-block.conf ] && echo /etc/nginx/conf.d/00-method-block.conf
+    [ -d /etc/nginx/snippets ] && find /etc/nginx/snippets -maxdepth 1 -type f 2>/dev/null
+    [ -f /etc/redis/users.acl ] && echo /etc/redis/users.acl
+    [ -f /etc/laravel/env ] && echo /etc/laravel/env
+    [ -d /etc/systemd/system/octane.service.d ] && find /etc/systemd/system/octane.service.d -maxdepth 1 -type f 2>/dev/null
+    [ -d /etc/nginx/modsec ] && find /etc/nginx/modsec -maxdepth 2 -type f 2>/dev/null
+    [ -f /etc/cron.d/laravel-audit ] && echo /etc/cron.d/laravel-audit
 } > "$KEYRING_LIST" 2>/dev/null
 
 # Pasar paths existentes + válidos a tar (filter /dev/null noise).
