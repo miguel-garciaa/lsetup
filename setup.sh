@@ -158,9 +158,6 @@ sudo dnf install -y chrony 2>/dev/null || true
 sudo systemctl enable --now chronyd 2>/dev/null || true
 sudo chronyc -a makestep &>/dev/null || true
 
-git config --global user.name "miguel"
-git config --global user.email "miguel2006ngl@gmail.com"
-
 # Límites del sistema
 sudo bash -c 'cat << "EOF" >> /etc/security/limits.conf
 * soft nofile 65535
@@ -176,6 +173,8 @@ echo "=== 2. FIREWALL ==="
 sudo dnf install -y firewalld
 sudo systemctl enable --now firewalld
 sudo firewall-cmd --permanent --add-service=http
+# SSH abierto para Cursor Remote-SSH (secure.sh lo restringe por IP después).
+sudo firewall-cmd --permanent --add-service=ssh
 # 8000 interno (Octane) no necesita exponerse: Nginx hace de reverse proxy.
 sudo firewall-cmd --reload
 
@@ -253,6 +252,22 @@ echo "=== 4. USUARIO LARAVEL (no-root) ==="
 sudo useradd -m -s /bin/bash -d "$LARAVEL_HOME" "$LARAVEL_USER" 2>/dev/null || true
 sudo mkdir -p "$LARAVEL_HOME"
 sudo chown -R "$LARAVEL_USER":"$LARAVEL_USER" "$LARAVEL_HOME"
+
+# Password "laravel" desbloquea cuenta (useradd deja !! en /etc/shadow, SSH rechaza).
+# secure.sh forzará key-only más tarde; password es puente para Cursor Remote-SSH.
+echo "laravel:laravel" | sudo chpasswd
+
+# .ssh listo para subir clave pública (ver ssh.txt). Permisos estrictos para StrictModes.
+sudo -u "$LARAVEL_USER" mkdir -p "$LARAVEL_HOME/.ssh"
+sudo -u "$LARAVEL_USER" touch "$LARAVEL_HOME/.ssh/authorized_keys"
+sudo chmod 700 "$LARAVEL_HOME/.ssh"
+sudo chmod 600 "$LARAVEL_HOME/.ssh/authorized_keys"
+sudo chown -R "$LARAVEL_USER":"$LARAVEL_USER" "$LARAVEL_HOME/.ssh"
+
+# Git config como laravel (HOME real → /var/lib/laravel/.gitconfig, no /root).
+sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" git config --global user.name "miguel"
+sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" git config --global user.email "miguel2006ngl@gmail.com"
+sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" git config --global init.defaultBranch main
 
 sudo mkdir -p /var/www
 sudo chown "$LARAVEL_USER":"$LARAVEL_USER" /var/www

@@ -93,16 +93,32 @@ fi
 # Helper: re-cachea config de Laravel tras editar .env y reinicia Octane.
 # config:cache congela conexiones Redis/DB en bootstrap/cache/config.php;
 # sin re-cache, Octane ignora los cambios de .env → NOAUTH / WRONGPASS.
+# Además, si existe /etc/laravel/env (drop-in systemd), se sincronizan los
+# secretos de Redis para que systemd EnvironmentFile no sobreescriba .env.
 recache_laravel() {
     [ -z "$LARAVEL_DIR" ] && return 0
     local owner home log
     owner=$(stat -c '%U' "$LARAVEL_DIR/.env" 2>/dev/null || echo laravel)
     home=$(getent passwd "$owner" 2>/dev/null | cut -d: -f6)
     [ -z "$home" ] && home=/var/lib/laravel
+    if [ -f /etc/laravel/env ]; then
+        local tmpenv
+        tmpenv=$(mktemp)
+        grep -v -E '^(REDIS_USERNAME|REDIS_PASSWORD|DB_PASSWORD)=' /etc/laravel/env > "$tmpenv" 2>/dev/null || true
+        grep -E '^(REDIS_USERNAME|REDIS_PASSWORD|DB_PASSWORD)=' "$LARAVEL_DIR/.env" >> "$tmpenv" 2>/dev/null || true
+        sed -i -E 's/^([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"/\1=\2/; s/^([A-Za-z_][A-Za-z0-9_]*)='"'"'([^'"'"']*)'"'"'/\1=\2/' "$tmpenv" 2>/dev/null || true
+        cp "$tmpenv" /etc/laravel/env
+        rm -f "$tmpenv"
+        chown root:root /etc/laravel/env
+        chmod 600 /etc/laravel/env
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+    chown -R "$owner:$owner" "$LARAVEL_DIR" 2>/dev/null || true
+    chmod -R 775 "$LARAVEL_DIR/storage" "$LARAVEL_DIR/bootstrap/cache" 2>/dev/null || true
     log=$(mktemp)
     echo "   >> Re-cacheando config de Laravel (config:cache → aplica .env a Octane)..."
     if sudo -u "$owner" env HOME="$home" COMPOSER_HOME="$home/.composer" \
-            bash -lc "cd '$LARAVEL_DIR' && php artisan config:cache" >"$log" 2>&1; then
+            bash -lc "cd '$LARAVEL_DIR' && php artisan config:clear && php artisan cache:clear && php artisan config:cache" >"$log" 2>&1; then
         sed 's/^/      /' "$log"
         systemctl restart octane 2>/dev/null || systemctl reload octane 2>/dev/null || \
             echo "   >> octane no reiniciado (reinicia manual: sudo systemctl restart octane)."
@@ -671,8 +687,12 @@ if [ -f /var/lib/aide/aide.db.new.gz ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 12. REDIS HARDENING (bind localhost + protected-mode + requirepass + rename-cmd)
+# 12. REDIS HARDENING (bind localhost + protected-mode + requirepass)
 # ------------------------------------------------------------------------------
+# NOTA v3: rename-command eliminado — entra en conflicto con aclfile (sec 29)
+# en Redis 6+: ambos son mutuamente excluyentos y redis-server refuses to
+# start. ACL con -@dangerous ya bloquea FLUSHALL/FLUSHDB/CONFIG/KEYS/SHUTDOWN/
+# DEBUG, cubriendo el mismo objetivo sin colisión.
 echo ">> [12/30] Endureciendo Redis..."
 REDIS_CONF=/etc/redis/redis.conf
 if [ ! -f "$REDIS_CONF" ]; then
@@ -682,7 +702,11 @@ else
     cp -a "$REDIS_CONF" "${REDIS_CONF}.bak.$TS"
 
     # Limpiar líneas previamente añadidas por secure.sh (re-ejecutable).
-    sed -i -E '/^requirepass[[:space:]]+/d; /^protected-mode[[:space:]]+/d; /^rename-command[[:space:]]+/d' "$REDIS_CONF" 2>/dev/null || true
+    # INCLUYE aclfile: si sec 29 lo añadió en run previa, dejarlo在这里
+    # provocaría coexistencia con requirepass+protected-mode añadidos abajo
+    # (harmless) PERO también con rename-command si sed de abajo fallase →
+    # restart-loop. Borrándolo aquí, sec 29 lo re-añade limpio al final.
+    sed -i -E '/^requirepass[[:space:]]+/d; /^protected-mode[[:space:]]+/d; /^rename-command[[:space:]]+/d; /^aclfile[[:space:]]+/d' "$REDIS_CONF" 2>/dev/null || true
 
     # No tocar bind ya puesto por setup.sh; si no existe, añadir localhost.
     if ! grep -qE '^[[:space:]]*bind[[:space:]]' "$REDIS_CONF" 2>/dev/null; then
@@ -694,16 +718,9 @@ else
 
     cat << EOF >> "$REDIS_CONF"
 
-# === añadido por secure.sh (v2) ===
+# === añadido por secure.sh (v3) — base hardening (sin rename-command) ===
 protected-mode yes
 requirepass $REDIS_PASS
-# Deshabilitar comandos peligrosos (vaciar DB, reconfigurar runtime, matar).
-rename-command FLUSHALL ""
-rename-command FLUSHDB ""
-rename-command CONFIG ""
-rename-command KEYS ""
-rename-command SHUTDOWN ""
-rename-command DEBUG ""
 EOF
 
     # SELinux: permitir que redis lea su config con la nueva password.
@@ -712,10 +729,17 @@ EOF
 
     systemctl restart redis 2>/dev/null || true
 
-    # Parchear Laravel .env con REDIS_PASSWORD.
+    # Parchear Laravel .env con REDIS_PASSWORD (user default).
+    # NO se escribe REDIS_USERNAME aquí: sec 12 configura usuario default
+    # (requirepass = shortcut para default). Si .env quedó con
+    # REDIS_USERNAME=laravel de sec 29 previa, AUTH usaría user laravel con
+    # pass del default → FAIL. Por eso limpiamos USERNAME también.
+    # NO se llama recache_laravel aquí: .env todavía incompleto (sin
+    # USERNAME=laravel hasta sec 29). Recache prematuro arrancaría Octane
+    # con config roto. Sec 29 hara recache definitivo cuando .env esté final.
     if [[ -n "$LARAVEL_DIR" && -f "$LARAVEL_DIR/.env" ]]; then
         TMP_ENV=$(mktemp)
-        grep -v '^REDIS_PASSWORD=' "$LARAVEL_DIR/.env" > "$TMP_ENV" || true
+        grep -v -E '^REDIS_USERNAME=|^REDIS_PASSWORD=' "$LARAVEL_DIR/.env" > "$TMP_ENV" || true
         printf 'REDIS_PASSWORD=%s\n' "$REDIS_PASS" >> "$TMP_ENV"
         # Detectar owner (laravel por convención de setup.sh, fallback SSH_USER).
         ENV_OWNER=$(stat -c '%U:%G' "$LARAVEL_DIR/.env" 2>/dev/null || echo "laravel:laravel")
@@ -723,8 +747,8 @@ EOF
         rm -f "$TMP_ENV"
         chown "$ENV_OWNER" "$LARAVEL_DIR/.env"
         chmod 600 "$LARAVEL_DIR/.env"
-        echo "   >> .env actualizado (REDIS_PASSWORD + chmod 600)."
-        recache_laravel
+        echo "   >> .env actualizado (REDIS_PASSWORD=default, sin USERNAME)."
+        echo "   >> NO se recachea Laravel aún (sec 29 hará recache final)."
     fi
 fi
 
@@ -1090,33 +1114,40 @@ chmod 600 /var/log/sudo-$SSH_USER.log 2>/dev/null || true
 # 25/30 PHP CLI INI HARDENING (drop-in /etc/php.d — NO toca FrankenPHP embed)
 # ------------------------------------------------------------------------------
 echo ">> [25/30] Endureciendo PHP CLI (/etc/php.d/99-hardening.ini)..."
-# El binario estático FrankenPHP embebe su propio PHP 8.4 + exts; este drop-in
-# solo afecta al PHP del sistema (artisan/composer). FrankenPHP queda intacto.
+# El binario estático FrankenPHP embebe su propio PHP 8.4 + exts: el WORKER
+# queda intacto. PERO el supervisor `octane:start` corre bajo PHP CLI del
+# sistema (/usr/bin/php artisan octane:start) → este ini SÍ le aplica.
+# Causa raíz histórica de octane en restart-loop tras secure.sh:
+#   - max_execution_time=30 mata daemons CLI largos (octane, queue:work).
+#   - disable_functions=exec rompe tooling Symfony/Composer/Octane.
+#   - error_log root:root 640 → usuario laravel no puede escribir errores.
+# Por eso: max_execution_time=0 (CLI ilimitado; los SAPI web/FrankenPHP
+# embed gestionan su propio timeout), sin `exec` en disable_functions, y
+# sin error_log a fichero (stderr → journald vía systemd unit).
 PHP_INI_DROP=/etc/php.d/99-hardening.ini
 if [ -d /etc/php.d ]; then
     # Re-escritura idempotente del drop-in (sin append duplicado).
     cat << 'EOF' > "$PHP_INI_DROP"
 ; === añadido por secure.sh v3 — hardening PHP CLI ===
-; FrankenPHP NO se ve afectado (embeds propio PHP 8.4).
+; FrankenPHP worker NO se ve afectado (embeds propio PHP 8.4).
+; El supervisor octane:start (PHP CLI) SÍ → no romper daemons.
 expose_php = Off
 display_errors = Off
 log_errors = On
-error_log = /var/log/php_errors.log
 upload_max_filesize = 20M
 post_max_size = 25M
 memory_limit = 256M
-max_execution_time = 30
+max_execution_time = 0
 session.cookie_httponly = 1
 session.cookie_secure = 1
 session.cookie_samesite = Lax
 session.use_strict_mode = 1
 session.entropy_length = 32
 session.gc_maxlifetime = 1440
-; disable_functions: NO incluye proc_open (rompe Symfony Process + Queue worker).
-disable_functions = exec,passthru,shell_exec,system,popen
+; disable_functions: NO incluye exec ni proc_open (Octane/Symfony Process/
+; Composer los necesitan en CLI). Web SAPI aplica su propio hardening.
+disable_functions = passthru,shell_exec,system,popen
 EOF
-    touch /var/log/php_errors.log 2>/dev/null || true
-    chmod 640 /var/log/php_errors.log 2>/dev/null || true
     restorecon -v "$PHP_INI_DROP" 2>/dev/null || true
 else
     echo "   ⚠️  /etc/php.d no existe. PHP CLI no instalado. Skip."
@@ -1128,13 +1159,15 @@ fi
 if [ -d /etc/nginx/conf.d ]; then
     echo ">> [26/30] Endureciendo timeouts y límites de cuerpo Nginx..."
     cat << 'EOF' > /etc/nginx/conf.d/00-timeouts.conf
-# === añadido por secure.sh v3 — anti slowloris + body limits ===
+# === anti slowloris + body limits (secure.sh v3) ===
+# NOTA: client_max_body_size NO se define aquí porque setup.sh ya lo setea
+# a 64m en nginx.conf (http block). Duplicarlo en conf.d/00-timeouts.conf
+# (incluido desde http) causa error "directive is duplicate" y nginx -t
+# aborta, dejando el servicio sin recargar. Filament/uploads necesitan 64m.
 client_body_timeout 30s;
 client_header_timeout 30s;
 client_body_buffer_size 16k;
-client_max_body_size 20m;
 send_timeout 30s;
-# Respuestas 429 para limitados (más amable que 503).
 limit_req_status 429;
 limit_conn_status 429;
 EOF
@@ -1159,8 +1192,13 @@ map $request_method $bad_method {
 }
 EOF
 
-    # Snippet con locations rate-limited para rutas sensibles (login/reset/api/auth).
+    # Snippet con locations rate-limited para rutas sensibles (login/reset).
     # Inyectar dentro de cada server 443 (idempotente, antes de location /).
+    # NO definir `location /api` aquí: el vhost de cloudflare.sh ya tiene
+    # `location / { proxy_pass http://octane }` que cubre toda petición; un
+    # `location /api` sin content handler entraría en conflicto y dejaría
+    # /api sin upstream → 502/521. Rate-limit global ya es aplicado por
+    # limit_req_zone a nivel http + limit_conn en method-guard.conf.
     cat << 'EOF' > /etc/nginx/snippets/rate-limited-routes.conf
 # === Rate-limit rutas sensibles (secure.sh v3) ===
 location ~ ^/(login|admin/login|password/reset|api/auth) {
@@ -1172,10 +1210,6 @@ location ~ ^/(login|admin/login|password/reset|api/auth) {
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-}
-location /api {
-    limit_req zone=req_limit burst=20 nodelay;
-    limit_conn conn_limit 10;
 }
 EOF
 
@@ -1232,30 +1266,53 @@ EOF
 fi
 
 # ------------------------------------------------------------------------------
-# 29/30 REDIS ACL FILE (aclfile) — coexiste con rename-command legacy
+# 29/30 REDIS ACL FILE (aclfile) — reemplaza rename-command legacy
 # ------------------------------------------------------------------------------
 if [ -f /etc/redis/redis.conf ]; then
-    echo ">> [29/30] Configurando Redis ACL (aclfile + coexist rename-command)..."
+    echo ">> [29/30] Configurando Redis ACL (aclfile, sin rename-command)..."
     REDIS_APP_PASS=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
     REDIS_ACL=/etc/redis/users.acl
 
     # ACL file: default (admin/CLI) + laravel (app least-privilege).
     # -@dangerous cubre FLUSHALL/FLUSHDB/CONFIG/KEYS/SHUTDOWN/DEBUG → coexiste
     # sin choque con rename-command "" (ambos rechazan, seguro).
+    # NOTA: ACL file de Redis 8 NO admite comentarios `#` (formato distinto
+    # a redis.conf). Solo líneas `user ...` son válidas. Escribir `#` causa
+    # "ACL errors: line 1 should start with user keyword" → service restart-loop.
     cat << EOF > "$REDIS_ACL"
-# === añadido por secure.sh v3 — ACL users ===
 user default on >$REDIS_PASS ~* +@all -@dangerous
-user laravel on >$REDIS_APP_PASS ~* +@all -@dangerous
+user laravel on >$REDIS_APP_PASS ~* +@all -@dangerous +flushdb
 EOF
     chmod 640 "$REDIS_ACL"
     chown redis:redis "$REDIS_ACL" 2>/dev/null || chown redis:root "$REDIS_ACL" 2>/dev/null || true
     restorecon -v "$REDIS_ACL" 2>/dev/null || true
 
     # Idempotente: quitar aclfile previo y añadir el nuevo.
-    sed -i -E '/^aclfile[[:space:]]+/d' /etc/redis/redis.conf 2>/dev/null || true
+    # CRÍTICO: ACL file y rename-command son MUTUAMENTE EXCLUSIVOS en Redis 6+.
+    # Si se añade aclfile con rename-command presente, redis-server refuse to
+    # start con error "Cannot use ACL file when rename-command is used" →
+    # service stuck en restart-loop. ACL with -@dangerous cubre los mismos
+    # comandos (FLUSHALL/FLUSHDB/CONFIG/KEYS/SHUTDOWN/DEBUG), por lo que
+    # rename-command es redundante cuando se activa ACL.
+    sed -i -E '/^aclfile[[:space:]]+/d; /^rename-command[[:space:]]+/d' /etc/redis/redis.conf 2>/dev/null || true
+    # NOTA: protected-mode y requirepass (añadidos por sección 12) NO chocan
+    # con aclfile — requirepass es un shortcut para el usuario default que
+    # queda overridden por la línea `user default on >$REDIS_PASS` del ACL.
+    # Se conservan; son harmless y mantienen compat retro si aclfile se borra.
     printf '\n# === añadido por secure.sh (v3) ===\naclfile %s\n' "$REDIS_ACL" >> /etc/redis/redis.conf
 
     systemctl restart redis 2>/dev/null || true
+    # Verificar arranque (loop 3s * 5). Avisar si no levanta.
+    REDIS_UP=no
+    for i in 1 2 3 4 5; do
+        systemctl is-active --quiet redis && { REDIS_UP=yes; break; }
+        sleep 3
+    done
+    if [ "$REDIS_UP" != "yes" ]; then
+        echo "   ⚠️  Redis no levantó tras ACL. Revisa config:"
+        echo "      journalctl -u redis --no-pager | tail -30"
+        echo "      Común: aclfile + rename-command coexisten (este parche los quita, verify)."
+    fi
 
     # Parchear Laravel .env con REDIS_USERNAME=laravel + REDIS_PASSWORD=app pass.
     if [[ -n "$LARAVEL_DIR" && -f "$LARAVEL_DIR/.env" ]]; then
@@ -1270,6 +1327,26 @@ EOF
         echo "   >> .env actualizado (REDIS_USERNAME=laravel + REDIS_PASSWORD=app)."
         echo "   🔑 Redis APP password (gárdala aparte):"
         echo "      $REDIS_APP_PASS"
+
+        # Re-mirror secrets a /etc/laravel/env (systemd EnvironmentFile de
+        # harden.sh). Si harden.sh creó /etc/laravel/env y este re-run de
+        # secure.sh cambió REDIS_APP_PASS, el EnvironmentFile queda stale:
+        # systemd octane inyecta REDIS_PASSWORD=pass_vieja, gana a .env en
+        # runtime Dotenv → AUTH FAIL → octane crash-loop → 502/521.
+        # Re-mirroring sincroniza EnvironmentFile con .env final.
+        if [ -f /etc/laravel/env ]; then
+            SECRET_PATTERN='(_PASSWORD=|_SECRET=|_TOKEN=|^APP_KEY=)'
+            awk -v p="$SECRET_PATTERN" 'NF && $0 !~ /^#/ && $0 ~ p' \
+                "$LARAVEL_DIR/.env" > /etc/laravel/env 2>/dev/null || true
+            # Strip surrounding quotes (systemd EnvironmentFile trata literal).
+            sed -i -E 's/^([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"/\1=\2/; s/^([A-Za-z_][A-Za-z0-9_]*)='"'"'([^'"'"']*)'"'"'/\1=\2/' \
+                /etc/laravel/env 2>/dev/null || true
+            chown root:root /etc/laravel/env
+            chmod 600 /etc/laravel/env
+            restorecon -v /etc/laravel/env 2>/dev/null || true
+            echo "   >> /etc/laravel/env re-mirrored (Octane systemd EnvironmentFile sync)."
+        fi
+
         recache_laravel
     else
         echo "   >> .env no parcheado (Laravel no detectado). Configura REDIS_USERNAME=laravel a mano."
@@ -1300,13 +1377,52 @@ if systemctl is-active --quiet postgresql-18 2>/dev/null; then
     sudo -u postgres psql -c "REVOKE ALL ON DATABASE postgres FROM PUBLIC;" 2>/dev/null || true
 
     # pg_stat_statements: requiere shared_preload_libraries + restart.
-    CURRENT_PRELOAD=$(sudo -u postgres psql -At -c "SHOW shared_preload_libraries;" 2>/dev/null || echo "")
-    if ! echo "$CURRENT_PRELOAD" | grep -q 'pg_stat_statements'; then
-        NEW_PRELOAD="pg_stat_statements"
-        [ -n "$CURRENT_PRELOAD" ] && NEW_PRELOAD="${CURRENT_PRELOAD},${NEW_PRELOAD}"
-        sudo -u postgres psql -c "ALTER SYSTEM SET shared_preload_libraries = '${NEW_PRELOAD}';" 2>/dev/null || true
-        echo "   >> Reiniciando PostgreSQL para cargar pg_stat_statements (breve downtime)..."
-        systemctl restart postgresql-18 2>/dev/null || true
+    # Causa raíz histórica: el .so vive en postgresql18-contrib, que NO
+    # instala setup.sh:213 (solo -server). Si secure.sh corre sin contrib,
+    # `ALTER SYSTEM SET shared_preload_libraries` escribe la directiva en
+    # postgresql.auto.conf pero el restart falla al cargar un .so ausente
+    # → PG queda en estado failed con restart-loop atascado en systemd.
+    # Por eso: (1) asegurar contrib antes de tocar preload, (2) verificar
+    # arranque tras restart, (3) rollback de auto.conf si PG no levanta.
+    PG_STAT_SO=/usr/pgsql-18/lib/pg_stat_statements.so
+    if [ ! -f "$PG_STAT_SO" ]; then
+        echo "   >> pg_stat_statements.so ausente. Instalando postgresql18-contrib..."
+        dnf install -y --setopt='pgdg-*.repo_gpgcheck=0' --nogpgcheck \
+            postgresql18-contrib &>/dev/null || true
+    fi
+
+    if [ ! -f "$PG_STAT_SO" ]; then
+        echo "   ⚠️  contrib no instalable. Skip shared_preload_libraries (pg_stat_statements NO activo)."
+    else
+        CURRENT_PRELOAD=$(sudo -u postgres psql -At -c "SHOW shared_preload_libraries;" 2>/dev/null || echo "")
+        if ! echo "$CURRENT_PRELOAD" | grep -q 'pg_stat_statements'; then
+            NEW_PRELOAD="pg_stat_statements"
+            [ -n "$CURRENT_PRELOAD" ] && NEW_PRELOAD="${CURRENT_PRELOAD},${NEW_PRELOAD}"
+            # Backup de auto.conf por si rollback necesario tras restart fallido.
+            cp -a /var/lib/pgsql/18/data/postgresql.auto.conf \
+                  /var/lib/pgsql/18/data/postgresql.auto.conf.bak.$TS 2>/dev/null || true
+            sudo -u postgres psql -c "ALTER SYSTEM SET shared_preload_libraries = '${NEW_PRELOAD}';" 2>/dev/null || true
+            echo "   >> Reiniciando PostgreSQL para cargar pg_stat_statements (breve downtime)..."
+            systemctl restart postgresql-18 2>/dev/null || true
+            # Verificar arranque (loop 5s * 6). Rollback si no levanta.
+            PG_UP=no
+            for i in 1 2 3 4 5 6; do
+                systemctl is-active --quiet postgresql-18 && { PG_UP=yes; break; }
+                sleep 5
+            done
+            if [ "$PG_UP" != "yes" ]; then
+                echo "   ⚠️  PG no levantó tras preload. Rollback de ALTER SYSTEM..."
+                sed -i "/shared_preload_libraries = '.*pg_stat_statements.*'/d" \
+                    /var/lib/pgsql/18/data/postgresql.auto.conf 2>/dev/null || true
+                systemctl restart postgresql-18 2>/dev/null || true
+                for i in 1 2 3; do
+                    systemctl is-active --quiet postgresql-18 && break
+                    sleep 5
+                done
+                systemctl is-active --quiet postgresql-18 \
+                    || echo "   ⚠️  PG sigue caído. Revisa: journalctl -u postgresql-18 --no-pager | tail -40"
+            fi
+        fi
     fi
 
     # Slow query log + log prefix.
@@ -1314,8 +1430,10 @@ if systemctl is-active --quiet postgresql-18 2>/dev/null; then
     sudo -u postgres psql -c "ALTER SYSTEM SET log_line_prefix = '%m [%p] %u@%d ';" 2>/dev/null || true
     sudo systemctl reload postgresql-18 2>/dev/null || true
 
-    # Crear extensión (tras restart si aplica).
-    sudo -u postgres psql -d "$PG_APP_DB" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null || true
+    # Crear extensión (tras restart si aplica) solo si .so presente.
+    if [ -f "$PG_STAT_SO" ]; then
+        sudo -u postgres psql -d "$PG_APP_DB" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null || true
+    fi
     echo "   >> REVOKE public schema + pg_stat_statements + slow log (>250ms) aplicados."
 else
     echo ">> [30/30] PostgreSQL no activo. Skip least-privilege + pg_stat_statements."
@@ -1351,7 +1469,7 @@ echo "  - Sudo $SSH_USER:  use_pty + log_file + timestamp_timeout=5"
 echo "  - Servicios:     aliases mask'd (avahi/cups/nfs/smb/tftp/bluetooth...)"
 echo "  - USBGuard/GRUB: según elección interactiva (VPS=skip)"
 echo " [APP]"
-echo "  - Redis:         bind 127.0.0.1 + protected-mode + requirepass + rename-command"
+echo "  - Redis:         bind 127.0.0.1 + protected-mode + requirepass (sin rename-command)"
 echo "  - PostgreSQL:    ssl=on + password_encryption=scram-sha-256"
 echo "  - Cloudflare & Nginx: IPS REALES + bloqueo /.ENV + TLS moderno + CSP"
 echo "  - Nginx limits:  10r/s + limit_conn por IP"
@@ -1367,7 +1485,7 @@ echo "  - FrankenPHP:   NO tocado (embeds propio PHP 8.4)"
 echo "  - Nginx:        slowloris timeouts + body 20m + block TRACE/TRACK + limit_conn 20"
 echo "  - Nginx rate:   limit_req rutas sensibles (login/reset/api/auth burst=5 nodelay)"
 echo "  - Nginx hdrs:   COEP credentialless + CORP same-origin (+ COOP de sec6)"
-echo "  - Redis ACL:    aclfile /etc/redis/users.acl (default + laravel) coex rename-command"
+echo "  - Redis ACL:    aclfile /etc/redis/users.acl (default + laravel), rename-command removido (ACL -@dangerous cubre)"
 echo "  - PostgreSQL:   REVOKE public schema + pg_stat_statements + slow log >250ms"
 echo "  - Sec-logs:     ampliado con secciones WAF/PHP/PG (ver waf.sh hook)"
 echo " [CREDENCIALES]"
