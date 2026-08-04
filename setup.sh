@@ -264,6 +264,10 @@ sudo chmod 700 "$LARAVEL_HOME/.ssh"
 sudo chmod 600 "$LARAVEL_HOME/.ssh/authorized_keys"
 sudo chown -R "$LARAVEL_USER":"$LARAVEL_USER" "$LARAVEL_HOME/.ssh"
 
+# Grupo wheel = sudoers en RHEL/AlmaLinux (%wheel ALL=(ALL) ALL en /etc/sudoers).
+# Password requerido (laravel). Secure.sh puede endurecer después.
+sudo usermod -aG wheel "$LARAVEL_USER"
+
 # Git config como laravel (HOME real → /var/lib/laravel/.gitconfig, no /root).
 sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" git config --global user.name "miguel"
 sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" git config --global user.email "miguel2006ngl@gmail.com"
