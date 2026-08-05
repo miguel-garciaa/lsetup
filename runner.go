@@ -216,3 +216,25 @@ func (a *App) runParallel(cmds [][]string) {
 		os.Exit(1)
 	}
 }
+
+// runParallelIgnore es runParallel non-fatal: logea warn pero NO aborta.
+// Útil para setsebool/semanage donde un boolean puede no existir en la policy
+// del distro (ej: httpd_can_network_connect_redis no definido en AL10 por
+// defecto). Mantiene paralelismo (~5-10s vs 20-40s secuencial) sin romper
+// setup por booleans opcionales ausentes.
+func (a *App) runParallelIgnore(cmds [][]string) {
+	var wg sync.WaitGroup
+	for _, c := range cmds {
+		wg.Add(1)
+		go func(c []string) {
+			defer wg.Done()
+			cmd := exec.Command(c[0], c[1:]...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				a.log.Warn("parallel cmd falló (ignorado)", "cmd", c, "error", err)
+			}
+		}(c)
+	}
+	wg.Wait()
+}

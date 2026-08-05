@@ -355,10 +355,10 @@ func (a *App) s10_nginx_selinux() {
 		pDir+"/storage", pDir+"/bootstrap/cache")
 
 	// SELinux booleans en paralelo: cada setsebool -P carga policy boolean
-	// (~5-10s c/u). 4 secuencial = 20-40s; 4 paralelo = ~5-10s. Safe: cada
-	// boolean escribe a /etc/selinux/targeted/active/booleans/<name> (uno por
-	// boolean, sin colisión) + libsemanage lock interno para commit.
-	a.runParallel([][]string{
+	// (~5-10s c/u). 4 secuencial = 20-40s; 4 paralelo = ~5-10s.
+	// Non-fatal: algunos booleans pueden no existir en AL10 por defecto
+	// (ej: httpd_can_network_connect_redis). Logea warn y sigue.
+	a.runParallelIgnore([][]string{
 		{"sudo", "setsebool", "-P", "httpd_can_network_connect", "1"},
 		{"sudo", "setsebool", "-P", "httpd_can_network_connect_db", "1"},
 		{"sudo", "setsebool", "-P", "httpd_can_network_connect_redis", "1"},
@@ -367,7 +367,9 @@ func (a *App) s10_nginx_selinux() {
 
 	// semanage fcontext en paralelo: 2 reglas, cada una appenda a
 	// /etc/selinux/targeted/active/file_contexts.local con lock libsemanage.
-	a.runParallel([][]string{
+	// Non-fatal: si la regla ya existe, semanage devuelve error (idempotente
+	// parcial). restorecon posterior aplica lo que esté registrado.
+	a.runParallelIgnore([][]string{
 		{"sudo", "semanage", "fcontext", "-a", "-t", "httpd_sys_rw_content_t",
 			pDir + "/storage(/.*)?"},
 		{"sudo", "semanage", "fcontext", "-a", "-t", "httpd_sys_rw_content_t",
