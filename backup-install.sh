@@ -106,7 +106,9 @@ echo "     1. Diario       (recomendado para retención 14d)"
 echo "     2. Cada X días  (introduce X después)"
 echo "     3. Semanal      (día fijo de la semana)"
 echo "     4. Mensual      (día del mes 1-28)"
-read -rp "   Opción [1-4] (default=1): " CAD_OPT
+if [ -z "$CAD_OPT" ]; then
+    read -rp "   Opción [1-4] (default=1): " CAD_OPT
+fi
 CAD_OPT="${CAD_OPT:-1}"
 
 CADENCIA_MIN=""     # campo `minuto` cron (e.g. "*/30"); aquí usamos siempre 0
@@ -115,7 +117,9 @@ CADENCIA_DOM=""    # campo `día del mes`
 CADENCIA_DOW=""   # campo `día de la semana`
 CADENCIA_LABEL=""
 
-read -rp "   Hora del backup HH:MM (default=02:00): " BK_TIME
+if [ -z "$BK_TIME" ]; then
+    read -rp "   Hora del backup HH:MM (default=02:00): " BK_TIME
+fi
 BK_TIME="${BK_TIME:-02:00}"
 BK_HH="${BK_TIME%%:*}"
 BK_MM="${BK_TIME##*:}"
@@ -125,7 +129,9 @@ case "$CAD_OPT" in
         CADENCIA_LABEL="diario @ $BK_TIME"
         ;;
     2)
-        read -rp "   Cada cuántos días (X, 2-28): " X_DAYS
+        if [ -z "$X_DAYS" ]; then
+            read -rp "   Cada cuántos días (X, 2-28): " X_DAYS
+        fi
         if ! [[ "$X_DAYS" =~ ^[0-9]+$ ]] || [ "$X_DAYS" -lt 2 ] || [ "$X_DAYS" -gt 28 ]; then
             echo "❌ X inválido. Default 3."; X_DAYS=3
         fi
@@ -134,14 +140,18 @@ case "$CAD_OPT" in
         ;;
     3)
         echo "   Día de la semana: 1=lun 2=mar 3=mie 4=jue 5=vie 6=sab 0/7=dom"
-        read -rp "   Día [0-7] (default=0=dom): " WD
+        if [ -z "$WD" ]; then
+            read -rp "   Día [0-7] (default=0=dom): " WD
+        fi
         WD="${WD:-0}"
         case "$WD" in 0|1|2|3|4|5|6|7) ;; *) echo "❌ Default dom."; WD=0;; esac
         CADENCIA_MIN="$BK_MM"; CADENCIA_HOUR="$BK_HH"; CADENCIA_DOM="*"; CADENCIA_DOW="$WD"
         CADENCIA_LABEL="semanal (dow=$WD) @ $BK_TIME"
         ;;
     4)
-        read -rp "   Día del mes [1-28] (default=1): " MD
+        if [ -z "$MD" ]; then
+            read -rp "   Día del mes [1-28] (default=1): " MD
+        fi
         MD="${MD:-1}"
         if ! [[ "$MD" =~ ^[0-9]+$ ]] || [ "$MD" -lt 1 ] || [ "$MD" -gt 28 ]; then
             echo "❌ Default día 1."; MD=1
@@ -157,13 +167,17 @@ case "$CAD_OPT" in
 esac
 
 # Verificación semanal: día fijo domingo (0), hora prompt default 04:30.
-read -rp "   Hora verificación semanal HH:MM (default=04:30): " VF_TIME
+if [ -z "$VF_TIME" ]; then
+    read -rp "   Hora verificación semanal HH:MM (default=04:30): " VF_TIME
+fi
 VF_TIME="${VF_TIME:-04:30}"
 VF_HH="${VF_TIME%%:*}"
 VF_MM="${VF_TIME##*:}"
 
 # Retención flat 14 días.
-read -rp "   Días de retención (default=14, flat purge): " RET_DAYS
+if [ -z "$RET_DAYS" ]; then
+    read -rp "   Días de retención (default=14, flat purge): " RET_DAYS
+fi
 RET_DAYS="${RET_DAYS:-14}"
 if ! [[ "$RET_DAYS" =~ ^[0-9]+$ ]] || [ "$RET_DAYS" -lt 1 ]; then
     echo "❌ Retención inválida. Default 14."; RET_DAYS=14

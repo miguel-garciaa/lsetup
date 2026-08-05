@@ -102,7 +102,9 @@ echo "   >> SESSION_SECURE_COOKIE=true + SESSION_SAME_SITE=lax."
 echo ""
 echo "   ⚠️  SESSION_ENCRYPT=true INVALIDA todas las sesiones activas (silent re-login)."
 echo "       Skill recomendó ventana. ¿Aplicar ahora silenciosamente (re-login) o posponer?"
-read -rp "       Aplicar SESSION_ENCRYPT ahora? [s/N]: " ENC_CONFIRM
+if [ -z "$ENC_CONFIRM" ]; then
+    read -rp "       Aplicar SESSION_ENCRYPT ahora? [s/N]: " ENC_CONFIRM
+fi
 ENC_CONFIRM="${ENC_CONFIRM:-N}"
 ENC_CONFIRM="${ENC_CONFIRM,,}"
 if [[ "$ENC_CONFIRM" == "s" || "$ENC_CONFIRM" == "si" || "$ENC_CONFIRM" == "sí" ]]; then

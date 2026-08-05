@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,13 +15,13 @@ import (
 // Todas las secciones (sections.go) son métodos sobre App.
 type App struct {
 	log      *slog.Logger
-	cfg      *Config
+	cfg      *SetupConfig
 	tuning   *Tuning
 	serverIP string
 }
 
 // newApp construye App con logger JSON stdout (estándar del SKILL.md golang).
-func newApp(cfg *Config, t *Tuning, serverIP string) *App {
+func newApp(cfg *SetupConfig, t *Tuning, serverIP string) *App {
 	return &App{
 		log:      slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 		cfg:      cfg,
@@ -150,4 +151,26 @@ func appendFile(path, content string) error {
 func cmdOutput(name string, args ...string) (string, error) {
 	out, err := exec.Command(name, args...).Output()
 	return string(out), err
+}
+
+// runCmdPassthrough ejecuta el comando args[0] con args[1:] conectando
+// stdin/stdout/stderr del proceso actual (passthrough puro — preserva
+// interactividad y colores). Devuelve exit code numérico.
+// Útil para ejecutar scripts bash embebidos con herencia de terminal.
+func runCmdPassthrough(argv []string) int {
+	if len(argv) == 0 {
+		return 1
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode()
+		}
+		fmt.Fprintln(os.Stderr, "Error ejecutando:", argv, "→", err)
+		return 1
+	}
+	return 0
 }

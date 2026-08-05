@@ -76,7 +76,9 @@ fi
 
 # Usuario objetivo (prompt con default miguel).
 DEFAULT_USER="miguel"
-read -rp "1. Usuario para 2FA [default: $DEFAULT_USER]: " SSH_USER
+if [ -z "$SSH_USER" ]; then
+    read -rp "1. Usuario para 2FA [default: $DEFAULT_USER]: " SSH_USER
+fi
 SSH_USER="${SSH_USER:-$DEFAULT_USER}"
 if ! id "$SSH_USER" &>/dev/null; then
     echo "Error: el usuario '$SSH_USER' no existe."
@@ -95,7 +97,9 @@ timedatectl set-ntp true 2>/dev/null || true
 # ¿Generar secreto nuevo o usar existente?
 GEN_NEW="s"
 if [ -f "$USER_HOME/.google_authenticator" ]; then
-    read -rp "   Ya existe secreto para '$SSH_USER'. ¿Generar nuevo? [s/N]: " GEN_NEW
+    if [ -z "$GEN_NEW" ]; then
+        read -rp "   Ya existe secreto para '$SSH_USER'. ¿Generar nuevo? [s/N]: " GEN_NEW
+    fi
     GEN_NEW="${GEN_NEW:-N}"
     GEN_NEW="${GEN_NEW,,}"
 else

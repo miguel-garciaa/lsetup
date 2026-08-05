@@ -19,7 +19,9 @@ echo "==========================================================================
 
 
 # 1. Solicitar el nombre del dominio
-read -p "Introduce tu nombre de dominio: " DOMAIN_NAME
+if [ -z "$DOMAIN_NAME" ]; then
+    read -p "Introduce tu nombre de dominio: " DOMAIN_NAME
+fi
 
 
 if [ -z "$DOMAIN_NAME" ]; then
@@ -37,40 +39,49 @@ CERT_FILE="/etc/ssl/certs/${DOMAIN_NAME}.pem"
 KEY_FILE="/etc/ssl/private/${DOMAIN_NAME}.key"
 
 
-# 2. Captura interactiva del Certificado de Origen
-echo ""
-echo "--------------------------------------------------------------------------"
-echo " 1. Copia y pega el 'Certificado de origen' de Cloudflare."
-echo "    (Inicia con -----BEGIN CERTIFICATE-----)"
-echo "    Una vez pegado, presiona ENTER si el script no avanza solo."
-echo "--------------------------------------------------------------------------"
+# 2. Captura del Certificado de Origen
+# Si $CLOUDFLARE_CERT ya está seteado (env var inyectada por `lsetup up`
+# desde [dominio].cloudflare_cert de lsetup.conf), escribirlo directo a
+# $CERT_FILE sin prompt interactivo. Si vacío, flujo original por stdin.
+if [ -n "$CLOUDFLARE_CERT" ]; then
+    echo " [1/2] Usando cloudflare_cert del config lsetup.conf (PEM multiline)."
+    printf '%s\n' "$CLOUDFLARE_CERT" > "$CERT_FILE"
+else
+    echo ""
+    echo "--------------------------------------------------------------------------"
+    echo " 1. Copia y pega el 'Certificado de origen' de Cloudflare."
+    echo "    (Inicia con -----BEGIN CERTIFICATE-----)"
+    echo "    Una vez pegado, presiona ENTER si el script no avanza solo."
+    echo "--------------------------------------------------------------------------"
+    > "$CERT_FILE"
+    while IFS= read -r line; do
+        echo "$line" >> "$CERT_FILE"
+        if [[ "$line" =~ END.*CERTIFICATE ]]; then
+            break
+        fi
+    done
+fi
 
 
-> "$CERT_FILE"
-while IFS= read -r line; do
-    echo "$line" >> "$CERT_FILE"
-    if [[ "$line" =~ END.*CERTIFICATE ]]; then
-        break
-    fi
-done
-
-
-# 3. Captura interactiva de la Clave Privada
-echo ""
-echo "--------------------------------------------------------------------------"
-echo " 2. Copia y pega la 'Clave privada' de Cloudflare."
-echo "    (Inicia con -----BEGIN PRIVATE KEY-----)"
-echo "    Una vez pegada, presiona ENTER si el script no avanza solo."
-echo "--------------------------------------------------------------------------"
-
-
-> "$KEY_FILE"
-while IFS= read -r line; do
-    echo "$line" >> "$KEY_FILE"
-    if [[ "$line" =~ END.*KEY ]]; then
-        break
-    fi
-done
+# 3. Captura de la Clave Privada
+if [ -n "$CLOUDFLARE_KEY" ]; then
+    echo " [2/2] Usando cloudflare_key del config lsetup.conf (PEM multiline)."
+    printf '%s\n' "$CLOUDFLARE_KEY" > "$KEY_FILE"
+else
+    echo ""
+    echo "--------------------------------------------------------------------------"
+    echo " 2. Copia y pega la 'Clave privada' de Cloudflare."
+    echo "    (Inicia con -----BEGIN PRIVATE KEY-----)"
+    echo "    Una vez pegada, presiona ENTER si el script no avanza solo."
+    echo "--------------------------------------------------------------------------"
+    > "$KEY_FILE"
+    while IFS= read -r line; do
+        echo "$line" >> "$KEY_FILE"
+        if [[ "$line" =~ END.*KEY ]]; then
+            break
+        fi
+    done
+fi
 
 
 # Asignar permisos de seguridad estrictos
@@ -176,8 +187,10 @@ sudo systemctl reload nginx
 # Problemas de escaping si el dominio trae caracteres especiales.
 echo ""
 echo "=== ACTUALIZANDO APP_URL EN .env (HTTPS) ==="
-read -p "Ruta del proyecto Laravel [/var/www/laravel1]: " PROYECTO_DIR
-PROYECTO_DIR=${PROYECTO_DIR:-/var/www/laravel1}
+if [ -z "$PROYECTO_DIR" ]; then
+    read -p "Ruta del proyecto Laravel [/var/www/laravel1]: " PROYECTO_DIR
+    PROYECTO_DIR=${PROYECTO_DIR:-/var/www/laravel1}
+fi
 
 if [ -f "$PROYECTO_DIR/.env" ]; then
     NEW_URL="https://${DOMAIN_NAME}"

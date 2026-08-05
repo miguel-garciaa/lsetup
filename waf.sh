@@ -72,9 +72,21 @@ if [ -z "$MODSEC_SO" ]; then
     cd "$BUILD_DIR"
 
     # libmodsecurity v3 (la librería, NO el módulo nginx).
+    # Repo movido de SpiderLabs/libmodsecurity → owasp-modsecurity/ModSecurity
+    # (SpiderLabs archivado; nueva ubicación oficial OWASP).
+    # Si $GITHUB_USER y $GITHUB_TOKEN están set (inyectados por `lsetup up`
+    # desde [github] del config), incrustarlos en la URL para evitar rate-limit
+    # anónimo de GitHub. Sin creds, clone anónimo estándar.
+    # GIT_TERMINAL_PROMPT=0 + credential.helper= asegura que NUNCA cuelga
+    # pidiendo login interactivo: si falla, aborta con error claro.
+    GH_AUTH=""
+    if [ -n "$GITHUB_USER" ] && [ -n "$GITHUB_TOKEN" ]; then
+        GH_AUTH="${GITHUB_USER}:${GITHUB_TOKEN}@"
+    fi
     if [ ! -d libmodsecurity ]; then
-        git clone --depth 1 -b v3/master https://github.com/SpiderLabs/libmodsecurity.git \
-            || { echo "❌ git clone libmodsecurity falló."; exit 1; }
+        GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone --depth 1 -b v3/master \
+            "https://${GH_AUTH}github.com/owasp-modsecurity/ModSecurity.git" "libmodsecurity" \
+            || { echo "❌ git clone libmodsecurity falló (¿sin red, rate-limit o token invalido?)."; exit 1; }
     fi
     cd "$BUILD_DIR/libmodsecurity"
     git submodule update --init --recursive >/dev/null 2>&1 || true
@@ -95,8 +107,9 @@ if [ -z "$MODSEC_SO" ]; then
             || { echo "❌ download nginx-$NGINX_VER source falló."; exit 1; }
     fi
     [ -d "nginx-$NGINX_VER" ] || tar xzf "nginx-$NGINX_VER.tar.gz"
-    [ -d ModSecurity-nginx ] || git clone --depth 1 https://github.com/SpiderLabs/ModSecurity-nginx.git \
-        || { echo "❌ git clone connector falló."; exit 1; }
+    [ -d ModSecurity-nginx ] || GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone --depth 1 \
+        "https://${GH_AUTH}github.com/SpiderLabs/ModSecurity-nginx.git" \
+        || { echo "❌ git clone connector falló (¿sin red, rate-limit o token invalido?)."; exit 1; }
 
     # Reproducir configure args del nginx instalado (nginx -V) + add-dynamic-module.
     # --with-compat permite módulo portable si el nginx instalado también lo usó.

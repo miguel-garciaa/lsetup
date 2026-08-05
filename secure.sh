@@ -23,7 +23,9 @@ echo "==========================================================================
 # Validación IPv4/CIDR estricta: cada octeto 0-255, máscara /0-/32.
 IPV4_REGEX='^(([0-9]{1,2}|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]{1,2}|1[0-9]{2}|2[0-4][0-9]|25[0-5])(/([0-9]|[12][0-9]|3[0-2]))?$'
 
-read -rp "1. IP/CIDR autorizada para conectar por SSH (ej. 192.168.1.2 o 203.0.113.5 o 10.0.0.0/24): " ALLOWED_IP
+if [ -z "$ALLOWED_IP" ]; then
+    read -rp "1. IP/CIDR autorizada para conectar por SSH (ej. 192.168.1.2 o 203.0.113.5 o 10.0.0.0/24): " ALLOWED_IP
+fi
 if [[ -z "$ALLOWED_IP" ]]; then
     echo "Error: La dirección IP no puede estar vacía."
     exit 1
@@ -40,13 +42,17 @@ else
     echo "   ℹ️  IP/CIDR con máscara ($ALLOWED_IP): asegúrate de que cubra tu IP estática (pública o privada)."
 fi
 
-read -rp "2. Nuevo PUERTO para SSH (ej. 40400): " SSH_PORT
+if [ -z "$SSH_PORT" ]; then
+    read -rp "2. Nuevo PUERTO para SSH (ej. 40400): " SSH_PORT
+fi
 if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -le 1024 ] || [ "$SSH_PORT" -gt 65535 ]; then
     echo "Error: Introduce un puerto válido entre 1025 y 65535."
     exit 1
 fi
 
-read -rp "3. Usuario no-root administrador del sistema (ej. miguel): " SSH_USER
+if [ -z "$SSH_USER" ]; then
+    read -rp "3. Usuario no-root administrador del sistema (ej. miguel): " SSH_USER
+fi
 if ! id "$SSH_USER" &>/dev/null; then
     echo "Error: El usuario $SSH_USER no existe en el sistema."
     exit 1
@@ -60,7 +66,11 @@ fi
 
 # Contraseña Redis: autogenerada (hex 48) si no se introduce. Sirve incluso con
 # Redis en 127.0.0.1: defense-in-depth ante cualquier RCE que abra socket local.
-read -rp "4. Contraseña Redis [Enter=autogenerar con openssl hex 48]: " REDIS_PASS_INPUT
+if [ -z "$REDIS_PASS" ]; then
+    read -rp "4. Contraseña Redis [Enter=autogenerar con openssl hex 48]: " REDIS_PASS_INPUT
+else
+    REDIS_PASS_INPUT="$REDIS_PASS"
+fi
 if [[ -z "$REDIS_PASS_INPUT" ]]; then
     REDIS_PASS=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
     echo "   🔑 Redis password autogenerada (gárdala aparte):"
@@ -131,7 +141,9 @@ recache_laravel() {
 }
 
 # Email opcional para alertas futuras (placeholder, no se usar mail aquí).
-read -rp "5. Email para alertas de seguridad (Enter=omitir, solo log a fichero): " REPORT_EMAIL
+if [ -z "$REPORT_EMAIL" ]; then
+    read -rp "5. Email para alertas de seguridad (Enter=omitir, solo log a fichero): " REPORT_EMAIL
+fi
 REPORT_EMAIL="${REPORT_EMAIL:-}"
 
 # ------------------------------------------------------------------------------
@@ -953,28 +965,9 @@ done
 echo "   >> (Best-effort; servicios ausentes no generan error.)"
 
 # ------------------------------------------------------------------------------
-# 21. USBGUARD (condicional según virtualización)
+# 21. USBGUARD — elimado (no aplica en VM/VPS, sin USB real)
 # ------------------------------------------------------------------------------
-echo ">> [21/30] USBGuard (control de dispositivos USB)..."
-VIRT_TYPE=$(systemd-detect-virt 2>/dev/null || echo "none")
-case "$VIRT_TYPE" in
-    kvm|qemu|xen|lxc|container|microsoft|oracle|vmware)
-        echo "   >> VM/VPS detectada ('$VIRT_TYPE'). USBGuard omitido (sin USB real)."
-        ;;
-    *)
-        read -rp "   ¿Instalar USBGuard (allow-list USB)? [s/N]: " USBGUARD
-        USBGUARD="${USBGUARD:-N}"
-        USBGUARD="${USBGUARD,,}"
-        if [[ "$USBGUARD" == "s" || "$USBGUARD" == "si" || "$USBGUARD" == "sí" ]]; then
-            dnf install -y usbguard || true
-            usbguard generate-policy > /etc/usbguard/rules.conf 2>/dev/null || true
-            systemctl enable --now usbguard 2>/dev/null || true
-            echo "   >> USBGuard: allow-list generado, agentes conectados permitidos."
-        else
-            echo "   >> USBGuard omitido por el usuario."
-        fi
-        ;;
-esac
+echo ">> [21/30] USBGuard omitido (sin USB real en VM/VPS)."
 
 # ------------------------------------------------------------------------------
 # 22. GRUB PASSWORD (OPT-IN: NO recomendado en VPS sin consola propia)
@@ -985,7 +978,9 @@ DEFAULT_GRUB_RESP="N"
 if [[ "$VIRT_FOR_GRUB" == "none" ]]; then
     DEFAULT_GRUB_RESP="s"
 fi
-read -rp "   ¿Configurar contraseña GRUB? (protege bootloader, NO en VPS cPanel-cloud) [s/N, default=$DEFAULT_GRUB_RESP]: " GRUBSETUP
+if [ -z "$GRUBSETUP" ]; then
+    read -rp "   ¿Configurar contraseña GRUB? (protege bootloader, NO en VPS cPanel-cloud) [s/N, default=$DEFAULT_GRUB_RESP]: " GRUBSETUP
+fi
 GRUBSETUP="${GRUBSETUP:-$DEFAULT_GRUB_RESP}"
 GRUBSETUP="${GRUBSETUP,,}"
 if [[ "$GRUBSETUP" == "s" || "$GRUBSETUP" == "si" || "$GRUBSETUP" == "sí" ]]; then
