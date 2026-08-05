@@ -280,10 +280,29 @@ if [ ! -d /etc/nginx/modsec/owasp-crs ]; then
               2>/dev/null | grep '"tag_name"' | head -1 | sed -E 's/.*"v?([^"]+)".*/\1/')
   [ -z "$CRS_VER" ] && CRS_VER=4.0.0
   echo "   >> CRS versión: $CRS_VER"
-  curl -fsSL "https://github.com/coreruleset/coreruleset/releases/download/v${CRS_VER}/coreruleset-${CRS_VER}.tar.gz" \
-      -o /tmp/crs.tar.gz || { echo "[ERROR] CRS download falló."; exit 1; }
-  tar xzf /tmp/crs.tar.gz -C /tmp
-  mv "/tmp/coreruleset-${CRS_VER}" /etc/nginx/modsec/owasp-crs
+
+  # Desde CRS 4.x (≈4.5+) el release NO publica `coreruleset-X.tar.gz` full —
+  # solo la variante `-minimal` (production-ready: rules + setup, sin tests).
+  # Estrategia: intentar `-minimal.tar.gz` primero, fallback al auto-archive
+  # GitHub (siempre existe para cualquier tag).
+  # Extracción con --strip-components=1: evita depender del nombre interno
+  # del top-dir (coreruleset-X vs coreruleset-X-minimal vs coreruleset-vX).
+  mkdir -p /etc/nginx/modsec/owasp-crs
+
+  URL_MINIMAL="https://github.com/coreruleset/coreruleset/releases/download/v${CRS_VER}/coreruleset-${CRS_VER}-minimal.tar.gz"
+  URL_ARCHIVE="https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CRS_VER}.tar.gz"
+
+  if [ "${LSETUP_DEBUG:-0}" = "1" ]; then
+    echo "   >> Download: $URL_MINIMAL"
+  fi
+  if ! curl -fsSL "$URL_MINIMAL" -o /tmp/crs.tar.gz; then
+    echo "   >> -minimal no disponible (404 o red). Fallback a auto-archive GitHub..."
+    [ "${LSETUP_DEBUG:-0}" = "1" ] && echo "   >> Download: $URL_ARCHIVE"
+    curl -fsSL "$URL_ARCHIVE" -o /tmp/crs.tar.gz || { echo "[ERROR] CRS download falló (minimal + archive)."; exit 1; }
+  fi
+
+  tar xzf /tmp/crs.tar.gz -C /etc/nginx/modsec/owasp-crs --strip-components=1 \
+      || { echo "[ERROR] tar extract CRS falló."; rm -f /tmp/crs.tar.gz; exit 1; }
   rm -f /tmp/crs.tar.gz
 fi
 
