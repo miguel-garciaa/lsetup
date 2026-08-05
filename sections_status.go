@@ -41,7 +41,9 @@ func cmdStatus(args []string) {
 	}
 
 	if *install {
-		if err := os.WriteFile("/usr/local/bin/status", statusSh, 0755); err != nil {
+		clean := bytes.ReplaceAll(statusSh, []byte("\r\n"), []byte("\n"))
+		clean = bytes.ReplaceAll(clean, []byte("\r"), []byte("\n"))
+		if err := os.WriteFile("/usr/local/bin/status", clean, 0755); err != nil {
 			fmt.Fprintln(os.Stderr, "Error desplegando /usr/local/bin/status:", err)
 			os.Exit(1)
 		}
@@ -52,8 +54,11 @@ func cmdStatus(args []string) {
 	}
 
 	// Ejecutar script embebido vía `bash -s` (lee de stdin). Sin tmpfiles.
+	// Normaliza CRLF→LF: scripts editados en Windows rompen bash en Linux.
+	clean := bytes.ReplaceAll(statusSh, []byte("\r\n"), []byte("\n"))
+	clean = bytes.ReplaceAll(clean, []byte("\r"), []byte("\n"))
 	cmd := exec.Command("bash", "-s")
-	cmd.Stdin = bytes.NewReader(statusSh)
+	cmd.Stdin = bytes.NewReader(clean)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	_ = cmd.Run()

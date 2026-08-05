@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	_ "embed"
 	"flag"
 	"fmt"
@@ -48,7 +49,14 @@ var sh2fa []byte
 // tmpfile. Preserva stdin/stdout/stderr del proceso (interactividad).
 // scriptArgs son argv extras para el script (ej: ["--off"] para 2fa.sh).
 // Devuelve exit code (0 OK, ≠0 fallo).
+//
+// Normaliza CRLF→LF: scripts editados en Windows con \r\n rompen bash en Linux
+// ("set: -\r: opción inválida", "$'\r': orden no encontrada"). Stripping CR
+// aquí garantiza ejecución correcta sin importar line endings del source.
 func runEmbedded(script []byte, scriptArgs []string) int {
+	clean := bytes.ReplaceAll(script, []byte("\r\n"), []byte("\n"))
+	clean = bytes.ReplaceAll(clean, []byte("\r"), []byte("\n"))
+
 	tmp, err := os.CreateTemp("", "lsetup-*.sh")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error creando tmpfile:", err)
@@ -56,7 +64,7 @@ func runEmbedded(script []byte, scriptArgs []string) int {
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
-	if _, err := tmp.Write(script); err != nil {
+	if _, err := tmp.Write(clean); err != nil {
 		tmp.Close()
 		fmt.Fprintln(os.Stderr, "Error escribiendo tmpfile:", err)
 		return 1

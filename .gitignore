@@ -1,6 +1,0 @@
-# Binario compilado
-lsetup
-lsetup.exe
-
-# Config local (contiene secrets — NUNCA commitear)
-lsetup.conf

@@ -11,8 +11,8 @@ set -e
 # ==============================================================================
 
 if [ "$EUID" -ne 0 ]; then
-   echo "[WARN] Ejecuta este script como root o con sudo."
-   exit 1
+  echo "[WARN] Ejecuta este script como root o con sudo."
+  exit 1
 fi
 
 LARAVEL_USER="laravel"
@@ -22,25 +22,25 @@ LARAVEL_HOME="/var/lib/laravel"
 LARAVEL_DIR=""
 ENV_FILE=$(find /var/www -maxdepth 2 -mindepth 2 -name '.env' -type f 2>/dev/null | head -1)
 if [ -n "$ENV_FILE" ]; then
-   CANDIDATE=$(dirname "$ENV_FILE")
-   if [ -f "$CANDIDATE/artisan" ] && [ -d "$CANDIDATE/vendor" ]; then
-       LARAVEL_DIR="$CANDIDATE"
-   fi
+  CANDIDATE=$(dirname "$ENV_FILE")
+  if [ -f "$CANDIDATE/artisan" ] && [ -d "$CANDIDATE/vendor" ]; then
+      LARAVEL_DIR="$CANDIDATE"
+  fi
 fi
 if [ -z "$LARAVEL_DIR" ]; then
-   echo "[ERROR] No se detectó proyecto Laravel bajo /var/www. Aborto (este script es app-layer)."
-   exit 1
+  echo "[ERROR] No se detectó proyecto Laravel bajo /var/www. Aborto (este script es app-layer)."
+  exit 1
 fi
 
 as_laravel() {
-   sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" \
-       bash -lc "cd '$LARAVEL_DIR' && $1"
+  sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" \
+      bash -lc "cd '$LARAVEL_DIR' && $1"
 }
 set_env_var() {
-   local key="$1" val="$2" file="$3"
-   grep -v "^${key}=" "$file" > "$file.tmp" 2>/dev/null || true
-   printf '%s=%s\n' "$key" "$val" >> "$file.tmp"
-   mv "$file.tmp" "$file"
+  local key="$1" val="$2" file="$3"
+  grep -v "^${key}=" "$file" > "$file.tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$key" "$val" >> "$file.tmp"
+  mv "$file.tmp" "$file"
 }
 
 ENV_PATH="$LARAVEL_DIR/.env"
@@ -55,23 +55,23 @@ echo "==========================================================================
 echo ">> [1/6] Auditando \$fillable / \$guarded en app/Models/*.php..."
 MODELS_DIR="$LARAVEL_DIR/app/Models"
 if [ -d "$MODELS_DIR" ]; then
-   FILLABLE_ISSUES=0
-   GUARDED_ISSUES=0
-   while IFS= read -r model; do
-       [ -f "$model" ] || continue
-       fname=$(basename "$model")
-       if grep -qE '\$guarded[[:space:]]*=[[:space:]]*\[\][[:space:]]*;' "$model" 2>/dev/null; then
-           echo "   [ERROR] $fname: \$guarded = [] (mass-assignment abierto)"
-           GUARDED_ISSUES=$((GUARDED_ISSUES + 1))
-       elif ! grep -qE '\$fillable[[:space:]]*=' "$model" 2>/dev/null; then
-           echo "   [WARN]  $fname: sin \$fillable definido (revisar asignación manual)"
-           FILLABLE_ISSUES=$((FILLABLE_ISSUES + 1))
-       fi
-   done < <(find "$MODELS_DIR" -maxdepth 2 -name '*.php' -type f 2>/dev/null)
-   echo "   >> Resumen: $GUARDED_ISSUES con \$guarded=[], $FILLABLE_ISSUES sin \$fillable."
-   echo "   >> Tú decides el parche (Fase 4 manual). Script no edita código PHP."
+  FILLABLE_ISSUES=0
+  GUARDED_ISSUES=0
+  while IFS= read -r model; do
+      [ -f "$model" ] || continue
+      fname=$(basename "$model")
+      if grep -qE '\$guarded[[:space:]]*=[[:space:]]*\[\][[:space:]]*;' "$model" 2>/dev/null; then
+          echo "   [ERROR] $fname: \$guarded = [] (mass-assignment abierto)"
+          GUARDED_ISSUES=$((GUARDED_ISSUES + 1))
+      elif ! grep -qE '\$fillable[[:space:]]*=' "$model" 2>/dev/null; then
+          echo "   [WARN]  $fname: sin \$fillable definido (revisar asignación manual)"
+          FILLABLE_ISSUES=$((FILLABLE_ISSUES + 1))
+      fi
+  done < <(find "$MODELS_DIR" -maxdepth 2 -name '*.php' -type f 2>/dev/null)
+  echo "   >> Resumen: $GUARDED_ISSUES con \$guarded=[], $FILLABLE_ISSUES sin \$fillable."
+  echo "   >> Tú decides el parche (Fase 4 manual). Script no edita código PHP."
 else
-   echo "   >> $MODELS_DIR no existe. Skip audit $fillable."
+  echo "   >> $MODELS_DIR no existe. Skip audit $fillable."
 fi
 
 # ------------------------------------------------------------------------------
@@ -80,13 +80,13 @@ fi
 echo ">> [2/6] Verificando APP_DEBUG=false en .env..."
 CURRENT_DEBUG=$(awk -F= '/^APP_DEBUG=/{print $2; exit}' "$ENV_PATH" 2>/dev/null)
 if [ "$CURRENT_DEBUG" != "false" ]; then
-   echo "   [WARN]  APP_DEBUG=$CURRENT_DEBUG → forzando false (prod OBLIGATORIO)."
-   cp -a "$ENV_PATH" "${ENV_PATH}.bak.$(date +%s)"
-   set_env_var "APP_DEBUG" "false" "$ENV_PATH"
-   chown "$LARAVEL_USER":"$LARAVEL_USER" "$ENV_PATH"
-   chmod 600 "$ENV_PATH"
+  echo "   [WARN]  APP_DEBUG=$CURRENT_DEBUG → forzando false (prod OBLIGATORIO)."
+  cp -a "$ENV_PATH" "${ENV_PATH}.bak.$(date +%s)"
+  set_env_var "APP_DEBUG" "false" "$ENV_PATH"
+  chown "$LARAVEL_USER":"$LARAVEL_USER" "$ENV_PATH"
+  chmod 600 "$ENV_PATH"
 else
-   echo "   >> APP_DEBUG=false OK."
+  echo "   >> APP_DEBUG=false OK."
 fi
 
 # ------------------------------------------------------------------------------
@@ -103,15 +103,15 @@ echo ""
 echo "   [WARN]  SESSION_ENCRYPT=true INVALIDA todas las sesiones activas (silent re-login)."
 echo "       Skill recomendó ventana. ¿Aplicar ahora silenciosamente (re-login) o posponer?"
 if [ -z "$ENC_CONFIRM" ]; then
-   read -rp "       Aplicar SESSION_ENCRYPT ahora? [s/N]: " ENC_CONFIRM
+  read -rp "       Aplicar SESSION_ENCRYPT ahora? [s/N]: " ENC_CONFIRM
 fi
 ENC_CONFIRM="${ENC_CONFIRM:-N}"
 ENC_CONFIRM="${ENC_CONFIRM,,}"
 if [[ "$ENC_CONFIRM" == "s" || "$ENC_CONFIRM" == "si" || "$ENC_CONFIRM" == "sí" ]]; then
-   set_env_var "SESSION_ENCRYPT" "true" "$ENV_PATH"
-   echo "   >> SESSION_ENCRYPT=true aplicado (usuarios re-login)."
+  set_env_var "SESSION_ENCRYPT" "true" "$ENV_PATH"
+  echo "   >> SESSION_ENCRYPT=true aplicado (usuarios re-login)."
 else
-   echo "   >> SESSION_ENCRYPT pospuesto. Queda sin setear (default Laravel=false)."
+  echo "   >> SESSION_ENCRYPT pospuesto. Queda sin setear (default Laravel=false)."
 fi
 chown "$LARAVEL_USER":"$LARAVEL_USER" "$ENV_PATH"
 chmod 600 "$ENV_PATH"
@@ -124,24 +124,24 @@ echo "   login.sh ya aplica throttle:5,1 al /login. Verifica presentes en routes
 ROUTES_WEB="$LARAVEL_DIR/routes/web.php"
 ROUTES_API="$LARAVEL_DIR/routes/api.php"
 if [ -f "$ROUTES_WEB" ]; then
-   grep -qE 'throttle:5,1' "$ROUTES_WEB" 2>/dev/null \
-       && echo "     [OK] routes/web.php tiene throttle:5,1" \
-       || echo "     [WARN]  routes/web.php SIN throttle:5,1 (añade ->middleware('throttle:5,1') a /login y /password/*)"
+  grep -qE 'throttle:5,1' "$ROUTES_WEB" 2>/dev/null \
+      && echo "     [OK] routes/web.php tiene throttle:5,1" \
+      || echo "     [WARN]  routes/web.php SIN throttle:5,1 (añade ->middleware('throttle:5,1') a /login y /password/*)"
 else
-   echo "     - routes/web.php no encontrado."
+  echo "     - routes/web.php no encontrado."
 fi
 if [ -f "$ROUTES_API" ]; then
-   grep -qE 'throttle:60,1|throttle:[0-9]+,1' "$ROUTES_API" 2>/dev/null \
-       && echo "     [OK] routes/api.php tiene throttle" \
-       || echo "     [WARN]  routes/api.php SIN throttle (añade ->middleware('throttle:60,1') al grupo api)"
+  grep -qE 'throttle:60,1|throttle:[0-9]+,1' "$ROUTES_API" 2>/dev/null \
+      && echo "     [OK] routes/api.php tiene throttle" \
+      || echo "     [WARN]  routes/api.php SIN throttle (añade ->middleware('throttle:60,1') al grupo api)"
 else
-   echo "     - routes/api.php no encontrado (app sin API REST)."
+  echo "     - routes/api.php no encontrado (app sin API REST)."
 fi
 # Google OAuth callback (login.sh): verificar/configurar throttle reset.
 if grep -q 'google' "$ROUTES_WEB" 2>/dev/null; then
-   grep -qE 'auth/google.*throttle|password/reset.*throttle' "$ROUTES_WEB" 2>/dev/null \
-       && echo "     [OK] rutas google/reset con throttle" \
-       || echo "     [WARN]  auth/google/callback o password/reset SIN throttle (recomendado throttle:5,1)"
+  grep -qE 'auth/google.*throttle|password/reset.*throttle' "$ROUTES_WEB" 2>/dev/null \
+      && echo "     [OK] rutas google/reset con throttle" \
+      || echo "     [WARN]  auth/google/callback o password/reset SIN throttle (recomendado throttle:5,1)"
 fi
 echo "   >> Script NO edita rutas PHP (riesgo de romper la definición). Tú parcheas (Fase 4)."
 
@@ -172,7 +172,7 @@ echo "   >> /etc/laravel/env (root:root 600): $(wc -l < "$SYSTEMD_ENV" 2>/dev/nu
 DROPIN_DIR=/etc/systemd/system/octane.service.d
 mkdir -p "$DROPIN_DIR"
 if ! grep -q "EnvironmentFile=/etc/laravel/env" "$DROPIN_DIR/secrets.conf" 2>/dev/null; then
-   cat << 'EOF' > "$DROPIN_DIR/secrets.conf"
+  cat << 'EOF' > "$DROPIN_DIR/secrets.conf"
 [Service]
 EnvironmentFile=/etc/laravel/env
 EOF
@@ -185,29 +185,29 @@ echo "   >> Drop-in octane.service.d/secrets.conf creado."
 # re-cache, Octane ignora los cambios → sesiones sin SecureCookie, debug on.
 SKIP_OCTANE=0
 if [ -f "$LARAVEL_DIR/artisan" ]; then
-   CFG_LOG=$(mktemp)
-   if as_laravel "php artisan config:cache" >"$CFG_LOG" 2>&1; then
-       sed 's/^/      /' "$CFG_LOG"
-       echo "   >> config:cache OK (aplica cambios .env de secciones 2/3)."
-   else
-       sed 's/^/      /' "$CFG_LOG"
-       echo "   [WARN]  config:cache FALLÓ. NO se reinicia octane (config anterior sigue activo)."
-       echo "      Revisa .env: sudo -u $LARAVEL_USER bash -lc 'cd $LARAVEL_DIR && php artisan config:clear'"
-       SKIP_OCTANE=1
-   fi
-   rm -f "$CFG_LOG"
+  CFG_LOG=$(mktemp)
+  if as_laravel "php artisan config:cache" >"$CFG_LOG" 2>&1; then
+      sed 's/^/      /' "$CFG_LOG"
+      echo "   >> config:cache OK (aplica cambios .env de secciones 2/3)."
+  else
+      sed 's/^/      /' "$CFG_LOG"
+      echo "   [WARN]  config:cache FALLÓ. NO se reinicia octane (config anterior sigue activo)."
+      echo "      Revisa .env: sudo -u $LARAVEL_USER bash -lc 'cd $LARAVEL_DIR && php artisan config:clear'"
+      SKIP_OCTANE=1
+  fi
+  rm -f "$CFG_LOG"
 else
-   echo "   >> artisan ausente; skip config:cache."
-   SKIP_OCTANE=1
+  echo "   >> artisan ausente; skip config:cache."
+  SKIP_OCTANE=1
 fi
 # Reiniciar octane solo si está activo y config:cache pasó (no fallar si no instalado).
 if [ "$SKIP_OCTANE" -eq 1 ]; then
-   echo "   >> octane NO reiniciado (config:cache skip/falló)."
+  echo "   >> octane NO reiniciado (config:cache skip/falló)."
 elif systemctl list-unit-files 2>/dev/null | grep -q '^octane.service'; then
-   systemctl restart octane 2>/dev/null && echo "   >> octane reiniciado (secrets via EnvironmentFile)." \
-       || echo "   [WARN]  octane NO reinició. Revisa: systemctl status octane. Rollback: rm drop-in + daemon-reload."
+  systemctl restart octane 2>/dev/null && echo "   >> octane reiniciado (secrets via EnvironmentFile)." \
+      || echo "   [WARN]  octane NO reinició. Revisa: systemctl status octane. Rollback: rm drop-in + daemon-reload."
 else
-   echo "   >> octane.service no presente (setup.sh sin ejecutar). Drop-in esperará a setup."
+  echo "   >> octane.service no presente (setup.sh sin ejecutar). Drop-in esperará a setup."
 fi
 
 # ------------------------------------------------------------------------------
