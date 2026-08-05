@@ -367,6 +367,8 @@ if ! grep -q "ngx_http_modsecurity_module.so" "$NGINX_CONF" 2>/dev/null; then
 fi
 
 # Snippet reutilizable: activa modsec + apunta al rules_file global.
+# mkdir -p: /etc/nginx/snippets puede no existir (setup.sh nginx base no lo crea).
+mkdir -p /etc/nginx/snippets
 cat << 'EOF' > /etc/nginx/snippets/modsec.conf
 # === waf.sh: activar ModSecurity v3 en este contexto ===
 modsecurity on;
