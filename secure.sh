@@ -141,10 +141,12 @@ recache_laravel() {
 }
 
 # Email opcional para alertas futuras (placeholder, no se usar mail aquí).
-if [ -z "$REPORT_EMAIL" ]; then
+# Sentinel __lsetup_blank__ = config la dejó vacía explícitamente → sin prompt.
+if [ -z "${REPORT_EMAIL+x}" ]; then
   read -rp "5. Email para alertas de seguridad (Enter=omitir, solo log a fichero): " REPORT_EMAIL
+elif [ "$REPORT_EMAIL" = "__lsetup_blank__" ]; then
+  REPORT_EMAIL=""
 fi
-REPORT_EMAIL="${REPORT_EMAIL:-}"
 
 # ------------------------------------------------------------------------------
 # 0.5 PREFLIGHT RELOJ (chrony) — sin sync, GPG signature "not alive yet"
@@ -608,9 +610,6 @@ systemctl is-active dnf-automatic.timer 2>/dev/null || echo "dnf-automatic.timer
 echo -e "\n\e[1;34m[+] AIDE (DB ÚLTIMA ACTUALIZACIÓN)\e[0m"
 ls -l /var/lib/aide/aide.db.gz 2>/dev/null || echo "AIDE no inicializada (ejecuta 'sudo aide --init && sudo mv ...')."
 
-echo -e "\n\e[1;34m[+] USBGuard\e[0m"
-systemctl is-active usbguard 2>/dev/null || echo "USBGuard no activo (podría no aplicar en VPS)."
-
 echo -e "\e[1;36m[+] PHP CLI HARDENING (v3)\e[0m"
 if [ -f /etc/php.d/99-hardening.conf ] || [ -f /etc/php.d/99-hardening.ini ]; then
   echo "  Drop-in:    $(ls /etc/php.d/99-hardening.* 2>/dev/null | head -1)"
@@ -963,61 +962,6 @@ for svc in avahi-daemon cups nfs-server rpcbind smb nmb tftp xinetd bluetooth te
   systemctl mask "$svc" 2>/dev/null || true
 done
 echo "   >> (Best-effort; servicios ausentes no generan error.)"
-
-# ------------------------------------------------------------------------------
-# 21. USBGUARD — elimado (no aplica en VM/VPS, sin USB real)
-# ------------------------------------------------------------------------------
-echo ">> [21/30] USBGuard omitido (sin USB real en VM/VPS)."
-
-# ------------------------------------------------------------------------------
-# 22. GRUB PASSWORD (OPT-IN: NO recomendado en VPS sin consola propia)
-# ------------------------------------------------------------------------------
-echo ">> [22/30] GRUB password..."
-VIRT_FOR_GRUB=$(systemd-detect-virt 2>/dev/null || echo "none")
-DEFAULT_GRUB_RESP="N"
-if [[ "$VIRT_FOR_GRUB" == "none" ]]; then
-  DEFAULT_GRUB_RESP="s"
-fi
-if [ -z "$GRUBSETUP" ]; then
-  read -rp "   ¿Configurar contraseña GRUB? (protege bootloader, NO en VPS cPanel-cloud) [s/N, default=$DEFAULT_GRUB_RESP]: " GRUBSETUP
-fi
-GRUBSETUP="${GRUBSETUP:-$DEFAULT_GRUB_RESP}"
-GRUBSETUP="${GRUBSETUP,,}"
-if [[ "$GRUBSETUP" == "s" || "$GRUBSETUP" == "si" || "$GRUBSETUP" == "sí" ]]; then
-  read -rsp "   Contraseña GRUB: " GRUB_PASS
-  echo ""
-  read -rsp "   Confirma contraseña GRUB: " GRUB_PASS2
-  echo ""
-  if [[ "$GRUB_PASS" != "$GRUB_PASS2" ]]; then
-      echo "   [WARN]  Las contraseñas no coinciden. Skip GRUB."
-  elif [[ -z "$GRUB_PASS" ]]; then
-      echo "   [WARN]  Contraseña vacía. Skip GRUB."
-  elif ! command -v grub2-mkpasswd-pbkdf2 &>/dev/null; then
-      echo "   [WARN]  grub2-mkpasswd-pbkdf2 no disponible. Install 'grub2-tools' y reintenta. Skip."
-  else
-      GRUB_HASH=$(echo -e "${GRUB_PASS}\n${GRUB_PASS}" | grub2-mkpasswd-pbkdf2 2>/dev/null | grep -oE 'grub\.pbkdf2\.[a-zA-Z0-9.]+' | tail -1)
-      GRUBCFG_PATH=""
-      for p in /boot/grub2/grub.cfg /boot/efi/EFI/almalinux/grub.cfg /boot/efi/EFI/rocky/grub.cfg; do
-          [ -f "$p" ] && { GRUBCFG_PATH="$p"; break; }
-      done
-      if [[ -z "$GRUB_HASH" || -z "$GRUBCFG_PATH" ]]; then
-          echo "   [WARN]  Hash GRUB o grub.cfg no encontrados. Skip GRUB password."
-      else
-          cp -a "$GRUBCFG_PATH" "${GRUBCFG_PATH}.bak.$TS" 2>/dev/null || true
-          cat << EOF >> /etc/grub.d/40_custom
-
-# añadido por secure.sh (v2)
-set superusers="root"
-password_pbkdf2 root ${GRUB_HASH}
-EOF
-          grub2-mkconfig -o "$GRUBCFG_PATH" 2>/dev/null || true
-          echo "   >> GRUB password puesto (usuario=root, hash pbkdf2)."
-          echo "   >> EN ARRANQUE: para editar menú GRUB necesitarás esta contraseña."
-      fi
-  fi
-else
-  echo "   >> GRUB password omitido."
-fi
 
 # ------------------------------------------------------------------------------
 # 23. CRON DIARIO: SCAN SECURITY (rkhunter + AIDE + ClamAV → log)
@@ -1462,7 +1406,7 @@ echo "  - pwquality:     minlen=14 minclass=4 enforce_for_root=1"
 echo "  - login.defs:    UMASK=027 PASS_MIN/MAX_DAYS rotación YESCRYPT"
 echo "  - Sudo $SSH_USER:  use_pty + log_file + timestamp_timeout=5"
 echo "  - Servicios:     aliases mask'd (avahi/cups/nfs/smb/tftp/bluetooth...)"
-echo "  - USBGuard/GRUB: según elección interactiva (VPS=skip)"
+echo "  - USBGuard/GRUB: eliminados (no aplican en VPS, sin consola ni USB real)"
 echo " [APP]"
 echo "  - Redis:         bind 127.0.0.1 + protected-mode + requirepass (sin rename-command)"
 echo "  - PostgreSQL:    ssl=on + password_encryption=scram-sha-256"
@@ -1519,14 +1463,28 @@ maybe_reboot() {
   echo ""
   echo " [WARN]  Cambios pendientes de reboot:"
   echo "$razones" | sed 's/^/      - /'
-  echo ""
-  echo "   Programa reboot (Enter=manual más tarde):"
-  echo "     - 'now'                          reboot en 5s"
-  echo "     - 'HH:MM'                        hoy a esa hora (p.ej. 04:00)"
-  echo "     - 'YYYY-MM-DD HH:MM'             fecha+hora exactas"
-  echo "     - 'sun 04:00' / 'mon 02:30' / 'tomorrow 03:00'  formatos de 'at'"
-  read -rp "   Opción [Enter=skip]: " WHEN
-  [ -z "$WHEN" ] && { echo "   >> No programado. Reboot manual cuando puedas."; return 0; }
+
+  # Si REBOOT_SCHEDULE viene del config (exportada por lsetup):
+  #   - unset                 → path interactivo (read -rp)
+  #   - __lsetup_blank__      → solo aviso, sin programar ni prompt
+  #   - valor real (now/HH:MM/at-format) → usar directo como WHEN
+  if [ -n "${REBOOT_SCHEDULE+x}" ]; then
+    if [ "$REBOOT_SCHEDULE" = "__lsetup_blank__" ]; then
+      echo "   >> Programa reboot manualmente cuando puedas (config marcó vacío)."
+      return 0
+    fi
+    WHEN="$REBOOT_SCHEDULE"
+    echo "   >> Config reboot_schedule=$WHEN"
+  else
+    echo ""
+    echo "   Programa reboot (Enter=manual más tarde):"
+    echo "     - 'now'                          reboot en 5s"
+    echo "     - 'HH:MM'                        hoy a esa hora (p.ej. 04:00)"
+    echo "     - 'YYYY-MM-DD HH:MM'             fecha+hora exactas"
+    echo "     - 'sun 04:00' / 'mon 02:30' / 'tomorrow 03:00'  formatos de 'at'"
+    read -rp "   Opción [Enter=skip]: " WHEN
+    [ -z "$WHEN" ] && { echo "   >> No programado. Reboot manual cuando puedas."; return 0; }
+  fi
   if [ "$WHEN" = "now" ]; then
       echo "   >> Reboot en 5s..."
       ( sleep 5 && systemctl reboot ) &
@@ -1551,10 +1509,7 @@ else
       REBOOT_RAZONES+="tmpfs /tmp endurecido (agregado a /etc/fstab, aplica tras reboot)\n"
   fi
 fi
-# (b) GRUB password aplicado → kernels con grub.cfg re-generado, reboot aplica.
-if [ -f /etc/grub.d/40_custom ] && grep -q password_pbkdf2 /etc/grub.d/40_custom 2>/dev/null; then
-  REBOOT_RAZONES+="GRUB password activado (efecto en próximo arranque)\n"
-fi
+# (b) GRUB password aplicado — sección eliminada, sin branch de detección.
 # (c) Kernel parches vía dnf-automatic → requieren reboot para cargarse.
 if command -v dnf &>/dev/null && dnf needs-restarting -r 2>/dev/null | grep -qi reboot; then
   REBOOT_RAZONES+="Kernel/paquetes críticos actualizados pendientes de reboot\n"

@@ -251,11 +251,25 @@ func cmdUp(args []string) {
 		os.Exit(rc)
 	}
 
-	// --- Paso 4: harden (siempre) ---
+	// --- Paso 4: harden (siempre, default enc_confirm=s silencioso) ---
 	fmt.Println("\n>>> [4/6] harden")
+	// Default: enc_confirm=s (aplica SESSION_ENCRYPT sin prompt).
+	// Si [harden] existe, sus claves pisan el default.
+	_ = os.Setenv("ENC_CONFIRM", "s")
+	if sectionNonEmpty(cf, "harden") {
+		cf.exportEnvFiltered("harden", nil)
+	}
 	if rc := runEmbedded(shHarden, nil); rc != 0 {
 		fmt.Fprintf(os.Stderr, "Paso harden falló (exit %d). Pipeline abortado.\n", rc)
 		os.Exit(rc)
+	}
+	if sectionNonEmpty(cf, "harden") {
+		cf.RemoveSection("harden")
+		if err := cf.save(); err != nil {
+			log.Warn("auto-shred [harden] falló", "error", err)
+		} else {
+			log.Info("sección [harden] borrada del config (auto-shred)")
+		}
 	}
 
 	// --- Paso 5: secure (opcional — LAST hardening según AGENTS.md) ---
@@ -263,7 +277,21 @@ func cmdUp(args []string) {
 	if !sectionNonEmpty(cf, "secure") {
 		log.Warn("[secure] vacío — saltando hardening SSH/firewalld/f2b/CrowdSec/AIDE/ClamAV")
 	} else {
-		cf.exportEnvFiltered("secure", nil) // exporta todas las claves
+		// Validación pre-run: 4 campos REQUERIDOS. Vacío aborta (no prompt).
+		sec := cf.Section("secure")
+		required := []string{"allowed_ip", "ssh_port", "ssh_user", "redis_pass"}
+		missing := []string{}
+		for _, k := range required {
+			if sec[k] == "" {
+				missing = append(missing, k)
+			}
+		}
+		if len(missing) > 0 {
+			fmt.Fprintln(os.Stderr, "[secure] campos REQUERIDOS vacíos:", missing)
+			fmt.Fprintln(os.Stderr, "Rellena [secure] con allowed_ip, ssh_port, ssh_user, redis_pass y re-ejecuta lsetup up.")
+			os.Exit(1)
+		}
+		cf.exportEnvFiltered("secure", nil) // exporta todas las claves (vacías → sentinel)
 		if rc := runEmbedded(shSecure, nil); rc != 0 {
 			fmt.Fprintf(os.Stderr, "Paso secure falló (exit %d). Pipeline abortado.\n", rc)
 			os.Exit(rc)
@@ -348,15 +376,20 @@ func runSetupStep(cf *ConfigFile, cfgPath string, log *slog.Logger) int {
 }
 
 // exportEnvFiltered exporta solo las claves listadas (si nil, exporta todas).
+// Valores vacíos se setean como sentinel __lsetup_blank__ (no se skipean):
+// los scripts bash detectan el sentinel y omiten prompts interactivos,
+// distinguiendo "clave vacía explícita" de "clave ausente" (esta última
+// no se exporta y desencadena prompt si el script la busca).
 func (cf *ConfigFile) exportEnvFiltered(section string, allowed []string) {
 	for k, v := range cf.Section(section) {
-		if v == "" {
-			continue
-		}
 		if allowed != nil && !containsStr(allowed, k) {
 			continue
 		}
-		_ = os.Setenv(toUpperASCII(k), v)
+		if v == "" {
+			_ = os.Setenv(toUpperASCII(k), "__lsetup_blank__")
+		} else {
+			_ = os.Setenv(toUpperASCII(k), v)
+		}
 	}
 }
 

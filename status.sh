@@ -16,6 +16,32 @@ else
   echo "======================================================="
 fi
 
+# --- 1.5 RESUMEN RÁPIDO DE SERVICIOS (solo is-active + octane healthz) -----
+echo -e "\n\e[1;36m[+] RESUMEN RÁPIDO DE SERVICIOS\e[0m"
+svc_state() { systemctl is-active "$1" 2>/dev/null || echo "inactive"; }
+printf "  %-22s %s\n" "postgresql-18" "$(svc_state postgresql-18)"
+printf "  %-22s %s\n" "redis" "$(svc_state redis)"
+printf "  %-22s %s\n" "nginx" "$(svc_state nginx)"
+OCT_STATE=$(svc_state octane)
+HZ_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://127.0.0.1:8000/healthz 2>/dev/null)
+if [ "$HZ_CODE" = "200" ]; then
+  OCT_STATE="$OCT_STATE (healthz UP)"
+elif [ -n "$HZ_CODE" ] && [ "$HZ_CODE" != "000" ]; then
+  OCT_STATE="$OCT_STATE (healthz HTTP $HZ_CODE)"
+else
+  OCT_STATE="$OCT_STATE (healthz no responde)"
+fi
+printf "  %-22s %s\n" "octane" "$OCT_STATE"
+printf "  %-22s %s\n" "firewalld" "$(svc_state firewalld)"
+printf "  %-22s %s\n" "chronyd" "$(svc_state chronyd)"
+printf "  %-22s %s\n" "fail2ban" "$(svc_state fail2ban)"
+printf "  %-22s %s\n" "crowdsec" "$(svc_state crowdsec)"
+printf "  %-22s %s\n" "dnf-automatic.timer" "$(svc_state dnf-automatic.timer)"
+printf "  %-22s %s\n" "clamav-freshclam" "$(svc_state clamav-freshclam)"
+printf "  %-22s %s\n" "atd" "$(svc_state atd)"
+printf "  %-22s %s\n" "auditd" "$(svc_state auditd)"
+printf "  %-22s %s\n" "sshd" "$(svc_state sshd)"
+
 # --- 2. SERVICIOS LSETUP (estado profundo DB+HTTP) --------------------------
 echo -e "\n\e[1;36m[+] SERVICIOS LSETUP (estado profundo DB+HTTP)\e[0m"
 

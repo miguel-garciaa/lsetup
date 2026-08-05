@@ -99,11 +99,15 @@ set_env_var "SESSION_SAME_SITE" "lax" "$ENV_PATH"
 echo "   >> SESSION_SECURE_COOKIE=true + SESSION_SAME_SITE=lax."
 
 # SESSION_ENCRYPT invalida sesiones activas → ventana. Recomendado=ventana.
+# Sentinel __lsetup_blank__ = config la dejó vacía explícitamente → posponer.
+# Env unset = invocado manual → prompt interactivo.
 echo ""
 echo "   [WARN]  SESSION_ENCRYPT=true INVALIDA todas las sesiones activas (silent re-login)."
 echo "       Skill recomendó ventana. ¿Aplicar ahora silenciosamente (re-login) o posponer?"
-if [ -z "$ENC_CONFIRM" ]; then
+if [ -z "${ENC_CONFIRM+x}" ]; then
   read -rp "       Aplicar SESSION_ENCRYPT ahora? [s/N]: " ENC_CONFIRM
+elif [ "$ENC_CONFIRM" = "__lsetup_blank__" ]; then
+  ENC_CONFIRM="N"
 fi
 ENC_CONFIRM="${ENC_CONFIRM:-N}"
 ENC_CONFIRM="${ENC_CONFIRM,,}"

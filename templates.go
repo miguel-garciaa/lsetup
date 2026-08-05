@@ -24,6 +24,12 @@ db_user=
 db_pass=
 db_pass_file=
 
+# --- [harden] : lsetup harden (capa app Laravel) ---
+[harden]
+# SESSION_ENCRYPT=true invalida sesiones activas → re-login silencioso.
+# s=aplicar ahora (default). n/N=posponer.
+enc_confirm=s
+
 # --- [secure] : lsetup secure (bastionado integral, 24+ secciones) ---
 [secure]
 # IP/CIDR autorizada SSH. Ej. 192.168.1.2 o 10.0.0.0/24
@@ -34,10 +40,11 @@ ssh_port=
 ssh_user=
 # Contraseña Redis (autogenerada con openssl hex 48 por 'lsetup init')
 redis_pass=__REDIS_PASS__
-# Email alertas seguridad (vacío = solo log a fichero)
+# Email alertas seguridad (vacío = solo log a fichero, sin prompt)
 report_email=
-# Password GRUB (vacío = NO configurar)
-grub_pass=
+# Programa reboot tras secure. Vacío=omitir (sin prompt, solo aviso pendiente).
+# now=5s | 04:00=hoy HH:MM | 2026-12-31 04:00 | sun 04:00 | tomorrow 03:00
+reboot_schedule=
 
 # --- [dominio] : lsetup dominio (dominio + cert Cloudflare Origin) ---
 [dominio]
