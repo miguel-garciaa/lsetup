@@ -212,12 +212,51 @@ if [ -z "$MODSEC_SO" ]; then
 
   # Reproducir configure args del nginx instalado (nginx -V) + add-dynamic-module.
   # --with-compat permite módulo portable si el nginx instalado también lo usó.
+  #
+  # El spec rpm de AlmaLinux pasa opciones inválidas para compilar desde fuente
+  # vanilla; hay que filtrarlas:
+  #   --without-engine          flag del spec rpm, NO existe en nginx source
+  #   --with-openssl-opt=...    requiere --with-openssl=<path> (no aplicable)
+  #   --with-cc-opt / --with-ld-opt  quoting complejo; con --with-compat la ABI
+  #                                  solo depende de la versión, no de estos flags
+  # Además los args llevan quoting interno (--with-cc-opt='-O2 ...') que word
+  # splitting simple rompería → se usa eval para preservarlo.
   NGINX_CONFIG_ARGS=$(nginx -V 2>&1 | sed -n 's/.*configure arguments: //p')
+  NGINX_CONFIG_ARGS=$(printf '%s' "$NGINX_CONFIG_ARGS" | sed -E \
+      "s/--with-cc-opt='[^']*'//g; s/--with-ld-opt='[^']*'//g; s/--without-engine//g; s/--with-openssl-opt=[^ ]+//g")
+
   cd "nginx-$NGINX_VER"
+  # Limpiar restos de configure previo fallido (objs/ puede quedar inconsistente).
+  [ -d objs ] && rm -rf objs
   echo "   >> Configurando connector nginx (vs nginx $NGINX_VER)..."
-  # shellcheck disable=SC2086
-  run_log "nginx connector configure" /tmp/waf_nginx_configure.log \
-      ./configure --with-compat --add-dynamic-module=../ModSecurity-nginx $NGINX_CONFIG_ARGS
+  configure_ok=0
+  if [ "${LSETUP_DEBUG:-0}" = "1" ]; then
+      # shellcheck disable=SC2086
+      eval "./configure --with-compat --add-dynamic-module=../ModSecurity-nginx $NGINX_CONFIG_ARGS" \
+          && configure_ok=1
+  else
+      # shellcheck disable=SC2086
+      eval "./configure --with-compat --add-dynamic-module=../ModSecurity-nginx $NGINX_CONFIG_ARGS" \
+          >/tmp/waf_nginx_configure.log 2>&1 && configure_ok=1
+  fi
+  if [ "$configure_ok" = "0" ]; then
+      echo "   >> Replay de args falló; intentando configure mínimo (--with-compat + módulo)..."
+      if [ "${LSETUP_DEBUG:-0}" = "1" ]; then
+          ./configure --with-compat --add-dynamic-module=../ModSecurity-nginx \
+              || { echo "[ERROR] configure mínimo también falló."; exit 1; }
+      else
+          if ! ./configure --with-compat --add-dynamic-module=../ModSecurity-nginx \
+                  >>/tmp/waf_nginx_configure.log 2>&1; then
+              echo "[ERROR] nginx connector configure falló. Últimas 60 líneas:"
+              tail -n 60 /tmp/waf_nginx_configure.log
+              echo ""
+              echo "   Alternativa: añade el repo nginx.org (nginx-stable) y dnf install"
+              echo "   nginx-module-modsecurity (módulo precompilado compatible)."
+              echo "   Logs: /tmp/waf_nginx_configure.log"
+              exit 1
+          fi
+      fi
+  fi
   echo "   >> Compilando módulo nginx (make modules)..."
   run_log "make modules" /tmp/waf_nginx_make.log make modules
   mkdir -p /usr/lib64/nginx/modules
