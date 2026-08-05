@@ -318,7 +318,7 @@ cat << 'EOF' > /etc/nginx/modsec/modsecurity.conf
 SecRuleEngine DetectionOnly
 SecRequestBodyAccess On
 SecRequestBodyLimit 20971520
-SecRequestBodyJsonDepth 100
+# SecRequestBodyJsonDepth 100  # no soportado en builds ModSecurity sin JSON support
 SecDebugLogLevel 1
 SecAuditEngine RelevantOnly
 SecAuditLog /var/log/modsec/audit.log
@@ -390,16 +390,27 @@ done
 # ------------------------------------------------------------------------------
 echo ">> [6/6] Validando configuración nginx..."
 if ! nginx -t 2>/tmp/waf_err; then
-  echo "   [WARN]  AVISO: nginx -t falló. Detalle:"
+  echo "   [ERROR] nginx -t falló. NO se aplica config nueva (nginx sigue con config anterior). Detalle:"
   cat /tmp/waf_err
   echo ""
-  echo "   El módulo NO se activó en runtime. Revisa el error arriba."
-  echo "   Posibles causas: ABI incompatible (nginx sin --with-compat),"
-  echo "   o load_module en contexto erróneo. clear.sh sección 17 revierte."
-  echo "   .conf escritos pero no cargados (nginx sigue en config anterior)."
+  echo "   Config rota quedó en disco. Fix manual antes de reload, o clear.sh sección 17 revierte."
+  echo "   Salida sin recargar. NUNCA se hace restart automático (mataría nginx si config rota)."
 else
-  systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
-  echo "   >> nginx recargado con ModSecurity DetectionOnly."
+  # reload si está corriendo (master conserva config anterior si reload falla).
+  # start si no estaba corriendo. NUNCA restart: arrancaría con config rota y dejaría muerto.
+  if systemctl is-active --quiet nginx; then
+      if systemctl reload nginx; then
+          echo "   >> nginx recargado con ModSecurity DetectionOnly."
+      else
+          echo "   [WARN]  reload falló. nginx master conserva config anterior (viva). Revisa logs."
+      fi
+  else
+      if systemctl start nginx; then
+          echo "   >> nginx arrancado (no estaba corriendo) con ModSecurity DetectionOnly."
+      else
+          echo "   [WARN]  nginx no arrancó (no estaba corriendo). Revisa: systemctl status nginx."
+      fi
+  fi
 fi
 
 # ------------------------------------------------------------------------------

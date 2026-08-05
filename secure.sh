@@ -13,6 +13,28 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# safe_nginx_apply — recarga nginx sin matarlo si config futura rompe.
+# NUNCA restart: arrancaría con config rota y dejaría nginx muerto (efecto 521).
+#   - Si config inválida (nginx -t no checkeado aquí; caller lo hace) → reload falla
+#     y master conserva config anterior (graceful). nginx sigue sirviendo tráfico.
+#   - Si nginx no estaba corriendo → start (recién instalado).
+safe_nginx_apply() {
+  if systemctl is-active --quiet nginx; then
+      if systemctl reload nginx 2>/dev/null; then
+          echo "   >> nginx recargado (config anterior viva si reload hubiese fallado)."
+      else
+          echo "   [WARN]  reload nginx falló. Master conserva config anterior (sigue activo)."
+          echo "   Revisa: sudo nginx -t && sudo systemctl reload nginx"
+      fi
+  else
+      if systemctl start nginx 2>/dev/null; then
+          echo "   >> nginx arrancado (no estaba corriendo)."
+      else
+          echo "   [WARN]  nginx no arrancó (no estaba corriendo). Revisa: systemctl status nginx"
+      fi
+  fi
+}
+
 echo "=========================================================================="
 echo "   INICIANDO DESPLIEGUE INTEGRAL DE SEGURIDAD Y DEFENSA ACTIVA (v2)"
 echo "=========================================================================="
@@ -494,8 +516,9 @@ EOF
   if ! nginx -t 2>/tmp/nginx_err; then
       echo "   [WARN]  AVISO: nginx -t falló (sección 6). Detalle:"
       cat /tmp/nginx_err
+      echo "   Config rota quedó en disco; nginx sigue con config anterior (no recargado)."
   else
-      systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+      safe_nginx_apply
   fi
 fi
 
@@ -540,8 +563,9 @@ EOF
   if ! nginx -t 2>/tmp/nginx_err2; then
       echo "   [WARN]  AVISO: nginx -t falló (sección 7 TLS modern). Detalle:"
       cat /tmp/nginx_err2
+      echo "   Config rota quedó en disco; nginx sigue con config anterior (no recargado)."
   else
-      systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+      safe_nginx_apply
   fi
 fi
 
@@ -1173,8 +1197,9 @@ EOF
   if ! nginx -t 2>/tmp/nginx_err3; then
       echo "   [WARN]  AVISO: nginx -t falló (sección 27). Detalle:"
       cat /tmp/nginx_err3
+      echo "   Config rota quedó en disco; nginx sigue con config anterior (no recargado)."
   else
-      systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+      safe_nginx_apply
   fi
 fi
 
