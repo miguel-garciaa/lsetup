@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -173,4 +174,45 @@ func runCmdPassthrough(argv []string) int {
 		return 1
 	}
 	return 0
+}
+
+// runParallel ejecute n comandos concurrentemente (goroutines) y aborta
+// (os.Exit 1) si CUALQUIERA falla. Útil para setsebool (4 booleans de 5-10s
+// cada uno → 5-10s total en vez de 20-40s secuencial).
+//
+// NO usar para:
+//   - dnf install: lockfile /var/cache/dnf/*.lock colisiona
+//   - psql: transacciones comparten locks
+//   - git config --global: 3 writes concurrentes a ~/.gitconfig corrompen
+//   - chmod/chown -R: filesystem races
+//
+// stdout/stderr de las n goroutines se intercalan (aceptable para logs).
+// Sin mutex de stdout — go runtime sincroniza writes de stdout/stderr.
+func (a *App) runParallel(cmds [][]string) {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	for _, c := range cmds {
+		wg.Add(1)
+		go func(c []string) {
+			defer wg.Done()
+			cmd := exec.Command(c[0], c[1:]...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				a.log.Error("parallel cmd falló", "cmd", c, "error", err)
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		}(c)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		a.log.Error("runParallel: al menos un comando falló (fatal)", "error", firstErr)
+		os.Exit(1)
+	}
 }

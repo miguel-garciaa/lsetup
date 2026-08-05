@@ -27,6 +27,8 @@ import (
 // ejecuta el subcomando correspondiente sin prefijo.
 // setup es subcomando por defecto SOLO si no hay args (para mostrar ayuda).
 func main() {
+	// Diagnóstico: si esto no se imprime, el binario está corrupto (scp incompleto).
+	fmt.Fprintln(os.Stderr, "[lsetup] init OK — arrancando dispatcher...")
 	args := os.Args[1:]
 	base := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
 

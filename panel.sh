@@ -17,15 +17,15 @@ echo "==========================================================================
 # ------------------------------------------------------------------------------
 DEFAULT_DIR="/var/www/laravel1"
 if [ -f "./.env" ]; then
-    DEFAULT_DIR="$(pwd)"
+   DEFAULT_DIR="$(pwd)"
 fi
 
 read -p "Ruta del proyecto Laravel [$DEFAULT_DIR]: " PROYECTO_DIR
 PROYECTO_DIR=${PROYECTO_DIR:-$DEFAULT_DIR}
 
 if [ ! -d "$PROYECTO_DIR" ] || [ ! -f "$PROYECTO_DIR/.env" ]; then
-    echo "❌ Error: No se encontró un proyecto Laravel con .env en $PROYECTO_DIR"
-    exit 1
+   echo "[ERROR] Error: No se encontró un proyecto Laravel con .env en $PROYECTO_DIR"
+   exit 1
 fi
 
 cd "$PROYECTO_DIR"
@@ -36,7 +36,7 @@ cd "$PROYECTO_DIR"
 LARAVEL_USER="laravel"
 LARAVEL_HOME="/var/lib/laravel"
 as_laravel() {
-    sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" bash -lc "cd '$PROYECTO_DIR' && $*"
+   sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" bash -lc "cd '$PROYECTO_DIR' && $*"
 }
 
 # ------------------------------------------------------------------------------
@@ -62,43 +62,43 @@ echo " DIAGNÓSTICO: boot actual de Octane (FrankenPHP)"
 echo "--------------------------------------------------------------------------"
 
 diagnosticar_octane() {
-    echo "  - systemctl is-active octane: $(systemctl is-active octane 2>/dev/null || true)"
-    if ss -ltn 2>/dev/null | grep -q ':8000 '; then
-        echo "  - Puerto 8000: ESCUCHANDO (octane booteado)"
-        return 0
-    else
-        echo "  - Puerto 8000: NO escucha (octane caído o crash-loop)"
-        return 1
-    fi
+   echo "  - systemctl is-active octane: $(systemctl is-active octane 2>/dev/null || true)"
+   if ss -ltn 2>/dev/null | grep -q ':8000 '; then
+       echo "  - Puerto 8000: ESCUCHANDO (octane booteado)"
+       return 0
+   else
+       echo "  - Puerto 8000: NO escucha (octane caído o crash-loop)"
+       return 1
+   fi
 }
 
 diagnosticar_octane || {
-    echo "  Octane NO escucha :8000. Capturando fatal real del worker (foreground 6s)…"
-    sudo systemctl stop octane 2>/dev/null || true
-    # Foreground: arranca worker, deja que FrankenPHP imprima el fatal PHP, mata a 6s.
-    sudo timeout 6s runuser -u "$LARAVEL_USER" -- env HOME="$LARAVEL_HOME" \
-        bash -lc "cd '$PROYECTO_DIR' && APP_ENV=production /usr/bin/php artisan octane:start \
-            --server=frankenphp --host=127.0.0.1 --port=8000 --workers=1 --max-requests=10" \
-        2>&1 | tail -40 || true
-    # Trazar el worker directamente expone el PHP fatal aunque FrankenPHP se trague stderr.
-    if [ -f "$PROYECTO_DIR/public/frankenphp-worker.php" ]; then
-        echo "  ---- worker script directo (top fatal) ----"
-        sudo timeout 5s runuser -u "$LARAVEL_USER" -- env HOME="$LARAVEL_HOME" \
-            bash -lc "cd '$PROYECTO_DIR' && APP_ENV=production /usr/bin/php public/frankenphp-worker.php" \
-            2>&1 | head -30 || true
-    fi
-    # Laravel log (a veces captura antes del fatal si ya booteó partialmente).
-    if [ -s "$PROYECTO_DIR/storage/logs/laravel.log" ]; then
-        echo "  ---- últimos 30 líneas storage/logs/laravel.log ----"
-        sudo tail -n 30 "$PROYECTO_DIR/storage/logs/laravel.log" 2>/dev/null || true
-    fi
-    echo "--------------------------------------------------------------------------"
-    echo " Si el trace anterior muestra un fatal claro (Class not found,undefined"
-    echo " method, ext-*, Permission denied), corrige esa causa raíz y re-ejecuta"
-    echo " panel.sh. Filament no ara un Octane que no bootea."
-    echo "--------------------------------------------------------------------------"
-    read -p "¿Continuar instalando Filament igualmente? [s/N]: " CONT
-    [ "$CONT" = "s" ] || [ "$CONT" = "S" ] || { echo "Abortado."; exit 1; }
+   echo "  Octane NO escucha :8000. Capturando fatal real del worker (foreground 6s)…"
+   sudo systemctl stop octane 2>/dev/null || true
+   # Foreground: arranca worker, deja que FrankenPHP imprima el fatal PHP, mata a 6s.
+   sudo timeout 6s runuser -u "$LARAVEL_USER" -- env HOME="$LARAVEL_HOME" \
+       bash -lc "cd '$PROYECTO_DIR' && APP_ENV=production /usr/bin/php artisan octane:start \
+           --server=frankenphp --host=127.0.0.1 --port=8000 --workers=1 --max-requests=10" \
+       2>&1 | tail -40 || true
+   # Trazar el worker directamente expone el PHP fatal aunque FrankenPHP se trague stderr.
+   if [ -f "$PROYECTO_DIR/public/frankenphp-worker.php" ]; then
+       echo "  ---- worker script directo (top fatal) ----"
+       sudo timeout 5s runuser -u "$LARAVEL_USER" -- env HOME="$LARAVEL_HOME" \
+           bash -lc "cd '$PROYECTO_DIR' && APP_ENV=production /usr/bin/php public/frankenphp-worker.php" \
+           2>&1 | head -30 || true
+   fi
+   # Laravel log (a veces captura antes del fatal si ya booteó partialmente).
+   if [ -s "$PROYECTO_DIR/storage/logs/laravel.log" ]; then
+       echo "  ---- últimos 30 líneas storage/logs/laravel.log ----"
+       sudo tail -n 30 "$PROYECTO_DIR/storage/logs/laravel.log" 2>/dev/null || true
+   fi
+   echo "--------------------------------------------------------------------------"
+   echo " Si el trace anterior muestra un fatal claro (Class not found,undefined"
+   echo " method, ext-*, Permission denied), corrige esa causa raíz y re-ejecuta"
+   echo " panel.sh. Filament no ara un Octane que no bootea."
+   echo "--------------------------------------------------------------------------"
+   read -p "¿Continuar instalando Filament igualmente? [s/N]: " CONT
+   [ "$CONT" = "s" ] || [ "$CONT" = "S" ] || { echo "Abortado."; exit 1; }
 }
 
 # ------------------------------------------------------------------------------
@@ -118,23 +118,23 @@ sudo -u "$LARAVEL_USER" bash -c "cat > '$PROYECTO_DIR/patch_panel.php' << 'PHP'
 \$f = __DIR__.'/app/Providers/Filament/AdminPanelProvider.php';
 \$c = file_get_contents(\$f);
 if (strpos(\$c, '->login(') === false) {
-    \$anchor = '->default()';
-    \$pos = strpos(\$c, \$anchor);
-    if (\$pos === false) {
-        \$anchor = 'return \$panel';
-        \$pos = strpos(\$c, \$anchor);
-    }
-    if (\$pos !== false) {
-        \$insertAt = \$pos + strlen(\$anchor);
-        \$c = substr(\$c, 0, \$insertAt).'->login()'.substr(\$c, \$insertAt);
-        file_put_contents(\$f, \$c);
-        echo \"AdminPanelProvider: ->login() añadido\n\";
-    } else {
-        echo \"AdminPanelProvider: ancla no encontrada, añade ->login() manualmente\n\";
-        exit(1);
-    }
+   \$anchor = '->default()';
+   \$pos = strpos(\$c, \$anchor);
+   if (\$pos === false) {
+       \$anchor = 'return \$panel';
+       \$pos = strpos(\$c, \$anchor);
+   }
+   if (\$pos !== false) {
+       \$insertAt = \$pos + strlen(\$anchor);
+       \$c = substr(\$c, 0, \$insertAt).'->login()'.substr(\$c, \$insertAt);
+       file_put_contents(\$f, \$c);
+       echo \"AdminPanelProvider: ->login() añadido\n\";
+   } else {
+       echo \"AdminPanelProvider: ancla no encontrada, añade ->login() manualmente\n\";
+       exit(1);
+   }
 } else {
-    echo \"AdminPanelProvider: ->login() ya presente\n\";
+   echo \"AdminPanelProvider: ->login() ya presente\n\";
 }
 PHP"
 as_laravel "php patch_panel.php && rm -f patch_panel.php"
@@ -147,15 +147,15 @@ sudo -u "$LARAVEL_USER" bash -c "cat > '$PROYECTO_DIR/patch_providers.php' << 'P
 \$c = file_get_contents(\$f);
 \$cls = 'App\\\\Providers\\\\Filament\\\\AdminPanelProvider';
 if (strpos(\$c, \$cls) === false) {
-    \$c = preg_replace(
-        '/(\\])\\s*;\\s*\$/',
-        \"    \\\\App\\\\Providers\\\\Filament\\\\AdminPanelProvider::class,\n];\",
-        \$c
-    );
-    file_put_contents(\$f, \$c);
-    echo \"providers.php: AdminPanelProvider registrado\n\";
+   \$c = preg_replace(
+       '/(\\])\\s*;\\s*\$/',
+       \"    \\\\App\\\\Providers\\\\Filament\\\\AdminPanelProvider::class,\n];\",
+       \$c
+   );
+   file_put_contents(\$f, \$c);
+   echo \"providers.php: AdminPanelProvider registrado\n\";
 } else {
-    echo \"providers.php: AdminPanelProvider ya registrado\n\";
+   echo \"providers.php: AdminPanelProvider ya registrado\n\";
 }
 PHP"
 as_laravel "php patch_providers.php && rm -f patch_providers.php"
@@ -177,49 +177,49 @@ sudo -u "$LARAVEL_USER" bash -c "cat > '$PROYECTO_DIR/patch_trust.php' << 'PHP'
 \$bc = file_get_contents(\$bf);
 \$changed = false;
 if (strpos(\$bc, 'trustProxies') === false) {
-    \$anchor = '->withMiddleware(function (Middleware \$middleware) {';
-    \$pos = strpos(\$bc, \$anchor);
-    if (\$pos !== false) {
-        \$insertAt = \$pos + strlen(\$anchor);
-        \$bc = substr(\$bc, 0, \$insertAt)
-            . \"\\n        \\\$middleware->trustProxies(at: '*');\"
-            . substr(\$bc, \$insertAt);
-        file_put_contents(\$bf, \$bc);
-        echo \"bootstrap/app.php: trustProxies(at: '*') agregado\\n\";
-        \$changed = true;
-    } else {
-        echo \"bootstrap/app.php: ancla withMiddleware no encontrada (revisar manualmente)\\n\";
-    }
+   \$anchor = '->withMiddleware(function (Middleware \$middleware) {';
+   \$pos = strpos(\$bc, \$anchor);
+   if (\$pos !== false) {
+       \$insertAt = \$pos + strlen(\$anchor);
+       \$bc = substr(\$bc, 0, \$insertAt)
+           . \"\\n        \\\$middleware->trustProxies(at: '*');\"
+           . substr(\$bc, \$insertAt);
+       file_put_contents(\$bf, \$bc);
+       echo \"bootstrap/app.php: trustProxies(at: '*') agregado\\n\";
+       \$changed = true;
+   } else {
+       echo \"bootstrap/app.php: ancla withMiddleware no encontrada (revisar manualmente)\\n\";
+   }
 } else {
-    echo \"bootstrap/app.php: trustProxies ya presente\\n\";
+   echo \"bootstrap/app.php: trustProxies ya presente\\n\";
 }
 
 // --- app/Providers/AppServiceProvider.php: forceScheme en production ---
 \$af = __DIR__.'/app/Providers/AppServiceProvider.php';
 \$ac = file_get_contents(\$af);
 if (strpos(\$ac, 'forceScheme') === false) {
-    // Encolar el import tras 'use Illuminate\\Support\\ServiceProvider;'
-    \$ac = str_replace(
-        'use Illuminate\\\\Support\\\\ServiceProvider;',
-        \"use Illuminate\\\\Support\\\\ServiceProvider;\\nuse Illuminate\\\\Support\\\\Facades\\\\URL;\",
-        \$ac
-    );
-    // Insertar dentro de boot() -- buscar 'public function boot(): void' y la primera '{' tras el
-    \$bootPos = strpos(\$ac, 'public function boot');
-    if (\$bootPos !== false) {
-        \$bracePos = strpos(\$ac, '{', \$bootPos);
-        if (\$bracePos !== false) {
-            \$insertAt = \$bracePos + 1;
-            \$ac = substr(\$ac, 0, \$insertAt)
-                . \"\\n        if (\\\$this->app->environment('production')) {\\n            URL::forceScheme('https');\\n        }\"
-                . substr(\$ac, \$insertAt);
-            file_put_contents(\$af, \$ac);
-            echo \"AppServiceProvider: URL::forceScheme('https') agregado en production\\n\";
-            \$changed = true;
-        }
-    }
+   // Encolar el import tras 'use Illuminate\\Support\\ServiceProvider;'
+   \$ac = str_replace(
+       'use Illuminate\\\\Support\\\\ServiceProvider;',
+       \"use Illuminate\\\\Support\\\\ServiceProvider;\\nuse Illuminate\\\\Support\\\\Facades\\\\URL;\",
+       \$ac
+   );
+   // Insertar dentro de boot() -- buscar 'public function boot(): void' y la primera '{' tras el
+   \$bootPos = strpos(\$ac, 'public function boot');
+   if (\$bootPos !== false) {
+       \$bracePos = strpos(\$ac, '{', \$bootPos);
+       if (\$bracePos !== false) {
+           \$insertAt = \$bracePos + 1;
+           \$ac = substr(\$ac, 0, \$insertAt)
+               . \"\\n        if (\\\$this->app->environment('production')) {\\n            URL::forceScheme('https');\\n        }\"
+               . substr(\$ac, \$insertAt);
+           file_put_contents(\$af, \$ac);
+           echo \"AppServiceProvider: URL::forceScheme('https') agregado en production\\n\";
+           \$changed = true;
+       }
+   }
 } else {
-    echo \"AppServiceProvider: forceScheme ya presente\\n\";
+   echo \"AppServiceProvider: forceScheme ya presente\\n\";
 }
 exit(\$changed ? 0 : 0);
 PHP"
@@ -256,7 +256,7 @@ as_laravel "APP_ENV=production php artisan migrate --path=vendor/spatie/laravel-
 # no aborta el script — el admin se crea igual con syncRoles super_admin (bypass
 # Shield a nivel panel access) y el warning deja rastro para depuracion.
 as_laravel "php artisan shield:generate --all --panel=admin --no-interaction" || \
-    echo "  AVISO: shield:generate falló (ver log). super_admin role sigue valiendo para panel access."
+   echo "  AVISO: shield:generate falló (ver log). super_admin role sigue valiendo para panel access."
 
 # ------------------------------------------------------------------------------
 # 6. TRAIT HasRoles EN User (obligatorio para assignRole de spatie)
@@ -269,41 +269,41 @@ sudo -u "$LARAVEL_USER" bash -c "cat > '$PROYECTO_DIR/patch_user.php' << 'PHP'
 \$changed = false;
 
 if (strpos(\$c, 'HasRoles') === false) {
-    \$c = str_replace(
-        'use Illuminate\\\\Notifications\\\\Notifiable;',
-        \"use Illuminate\\\\Notifications\\\\Notifiable;\nuse Spatie\\\\Permission\\\\Traits\\\\HasRoles;\",
-        \$c
-    );
-    \$c = str_replace(
-        'use HasFactory, Notifiable;',
-        'use HasFactory, Notifiable, HasRoles;',
-        \$c
-    );
-    \$changed = true;
-    echo \"User.php parcheado con HasRoles\n\";
+   \$c = str_replace(
+       'use Illuminate\\\\Notifications\\\\Notifiable;',
+       \"use Illuminate\\\\Notifications\\\\Notifiable;\nuse Spatie\\\\Permission\\\\Traits\\\\HasRoles;\",
+       \$c
+   );
+   \$c = str_replace(
+       'use HasFactory, Notifiable;',
+       'use HasFactory, Notifiable, HasRoles;',
+       \$c
+   );
+   \$changed = true;
+   echo \"User.php parcheado con HasRoles\n\";
 } else {
-    echo \"User.php ya tiene HasRoles\n\";
+   echo \"User.php ya tiene HasRoles\n\";
 }
 
 if (strpos(\$c, 'FilamentUser') === false) {
-    \$c = str_replace(
-        'class User extends Authenticatable',
-        'class User extends Authenticatable implements \\\\Filament\\\\Models\\\\Contracts\\\\FilamentUser',
-        \$c
-    );
-    \$c = str_replace(
-        'use HasFactory, Notifiable, HasRoles;',
-        'use HasFactory, Notifiable, HasRoles, \\\\BezhanSalleh\\\\FilamentShield\\\\Traits\\\\HasPanelShield;',
-        \$c
-    );
-    \$changed = true;
-    echo \"User.php parcheado con FilamentUser y HasPanelShield\n\";
+   \$c = str_replace(
+       'class User extends Authenticatable',
+       'class User extends Authenticatable implements \\\\Filament\\\\Models\\\\Contracts\\\\FilamentUser',
+       \$c
+   );
+   \$c = str_replace(
+       'use HasFactory, Notifiable, HasRoles;',
+       'use HasFactory, Notifiable, HasRoles, \\\\BezhanSalleh\\\\FilamentShield\\\\Traits\\\\HasPanelShield;',
+       \$c
+   );
+   \$changed = true;
+   echo \"User.php parcheado con FilamentUser y HasPanelShield\n\";
 } else {
-    echo \"User.php ya implementa FilamentUser\n\";
+   echo \"User.php ya implementa FilamentUser\n\";
 }
 
 if (\$changed) {
-    file_put_contents(\$f, \$c);
+   file_put_contents(\$f, \$c);
 }
 PHP"
 as_laravel "php patch_user.php && rm -f patch_user.php"
@@ -320,12 +320,12 @@ as_laravel "php patch_user.php && rm -f patch_user.php"
 # ------------------------------------------------------------------------------
 echo " [4/6] Creando/actualizando usuario admin..."
 as_laravel "export ADMIN_NAME='$ADMIN_NAME' ADMIN_EMAIL='$ADMIN_EMAIL' ADMIN_PASS='$ADMIN_PASS'; \
-    php artisan tinker --execute='
+   php artisan tinker --execute='
 use Spatie\Permission\Models\Role;
 Role::firstOrCreate([\"name\" => \"super_admin\", \"guard_name\" => \"web\"]);
 \$u = \App\Models\User::updateOrCreate(
-    [\"email\" => env(\"ADMIN_EMAIL\")],
-    [\"name\" => env(\"ADMIN_NAME\"), \"password\" => bcrypt(env(\"ADMIN_PASS\"))]
+   [\"email\" => env(\"ADMIN_EMAIL\")],
+   [\"name\" => env(\"ADMIN_NAME\"), \"password\" => bcrypt(env(\"ADMIN_PASS\"))]
 );
 \$u->syncRoles([\"super_admin\"]);
 echo \"Admin: \" . \$u->email . \" | roles: \" . \$u->roles->pluck(\"name\")->implode(\",\") . PHP_EOL;
@@ -363,31 +363,31 @@ sudo systemctl restart octane 2>/dev/null || sudo systemctl start octane 2>/dev/
 # Healthcheck retry: esperar :8000 listening.
 OCTANE_UP=0
 for i in 1 2 3 4 5 6 7 8; do
-    sleep 1
-    if ss -ltn 2>/dev/null | grep -q ':8000 '; then
-        OCTANE_UP=1
-        echo "  Octane OK (:8000 listening tras $i intento(s))."
-        break
-    fi
+   sleep 1
+   if ss -ltn 2>/dev/null | grep -q ':8000 '; then
+       OCTANE_UP=1
+       echo "  Octane OK (:8000 listening tras $i intento(s))."
+       break
+   fi
 done
 
 if [ "$OCTANE_UP" -ne 1 ]; then
-    echo "  ❌ Octane NO escucha :8000 tras restart. Capturando fatal real del worker…"
-    sudo systemctl stop octane 2>/dev/null || true
-    sudo timeout 6s runuser -u "$LARAVEL_USER" -- env HOME="$LARAVEL_HOME" \
-        bash -lc "cd '$PROYECTO_DIR' && APP_ENV=production /usr/bin/php artisan octane:start \
-            --server=frankenphp --host=127.0.0.1 --port=8000 --workers=1 --max-requests=10" \
-        2>&1 | tail -40 || true
-    if [ -s "$PROYECTO_DIR/storage/logs/laravel.log" ]; then
-        echo "  ---- últimos 30 líneas storage/logs/laravel.log ----"
-        sudo tail -n 30 "$PROYECTO_DIR/storage/logs/laravel.log" 2>/dev/null || true
-    fi
-    echo "=========================================================================="
-    echo " Filament instalado pero Octane no bootea. Revisa el fatal arriba y aplica"
-    echo " el fix específico (ext faltante en binario FrankenPHP, config rota, etc)."
-    echo " Una vez corregido, basta con: sudo systemctl start octane"
-    echo "=========================================================================="
-    exit 1
+   echo "  [ERROR] Octane NO escucha :8000 tras restart. Capturando fatal real del worker…"
+   sudo systemctl stop octane 2>/dev/null || true
+   sudo timeout 6s runuser -u "$LARAVEL_USER" -- env HOME="$LARAVEL_HOME" \
+       bash -lc "cd '$PROYECTO_DIR' && APP_ENV=production /usr/bin/php artisan octane:start \
+           --server=frankenphp --host=127.0.0.1 --port=8000 --workers=1 --max-requests=10" \
+       2>&1 | tail -40 || true
+   if [ -s "$PROYECTO_DIR/storage/logs/laravel.log" ]; then
+       echo "  ---- últimos 30 líneas storage/logs/laravel.log ----"
+       sudo tail -n 30 "$PROYECTO_DIR/storage/logs/laravel.log" 2>/dev/null || true
+   fi
+   echo "=========================================================================="
+   echo " Filament instalado pero Octane no bootea. Revisa el fatal arriba y aplica"
+   echo " el fix específico (ext faltante en binario FrankenPHP, config rota, etc)."
+   echo " Una vez corregido, basta con: sudo systemctl start octane"
+   echo "=========================================================================="
+   exit 1
 fi
 
 # ----------------------------------------------------------------------------

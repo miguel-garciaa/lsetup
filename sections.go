@@ -64,8 +64,9 @@ func (a *App) s2_firewall() {
 	a.header("2. FIREWALL")
 	a.runStrict("sudo", "dnf", "install", "-y", "firewalld")
 	a.runStrict("sudo", "systemctl", "enable", "--now", "firewalld")
-	a.runStrict("sudo", "firewall-cmd", "--permanent", "--add-service", "http")
-	a.runStrict("sudo", "firewall-cmd", "--permanent", "--add-service", "ssh")
+	// Batch dos --add-service en 1 invocación (firewalld acepta múltiples flags).
+	a.runStrict("sudo", "firewall-cmd", "--permanent",
+		"--add-service=http", "--add-service=ssh")
 	a.runStrict("sudo", "firewall-cmd", "--reload")
 }
 
@@ -75,9 +76,6 @@ func (a *App) s2_firewall() {
 // ============================================================
 func (a *App) s3_postgres() {
 	a.header("3. POSTGRESQL 18")
-
-	// Re-sincronizar reloj justo antes de tocar PGDG (defensa VBox).
-	a.syncClockURLHTTP()
 
 	a.runIgnore("sudo", "dnf", "install", "-y", "--nogpgcheck",
 		"https://download.postgresql.org/pub/repos/yum/reporpms/EL-10-x86_64/pgdg-redhat-repo-latest.noarch.rpm")
@@ -154,9 +152,6 @@ ALTER SYSTEM SET effective_io_concurrency = %d;
 
 	a.runStrict("sudo", "systemctl", "restart", "postgresql-18")
 }
-
-// syncClockURLHTTP es alias de syncClockHTTP (sección 3 llama de nuevo).
-func (a *App) syncClockURLHTTP() { a.syncClockHTTP() }
 
 // ============================================================
 // Sección 4: Usuario Laravel (no-root)
@@ -359,17 +354,25 @@ func (a *App) s10_nginx_selinux() {
 	a.runStrict("sudo", "chmod", "-R", "775",
 		pDir+"/storage", pDir+"/bootstrap/cache")
 
-	// SELinux booleans.
-	a.runIgnore("sudo", "setsebool", "-P", "httpd_can_network_connect", "1")
-	a.runIgnore("sudo", "setsebool", "-P", "httpd_can_network_connect_db", "1")
-	a.runIgnore("sudo", "setsebool", "-P", "httpd_can_network_connect_redis", "1")
-	a.runIgnore("sudo", "setsebool", "-P", "httpd_unified", "1")
+	// SELinux booleans en paralelo: cada setsebool -P carga policy boolean
+	// (~5-10s c/u). 4 secuencial = 20-40s; 4 paralelo = ~5-10s. Safe: cada
+	// boolean escribe a /etc/selinux/targeted/active/booleans/<name> (uno por
+	// boolean, sin colisión) + libsemanage lock interno para commit.
+	a.runParallel([][]string{
+		{"sudo", "setsebool", "-P", "httpd_can_network_connect", "1"},
+		{"sudo", "setsebool", "-P", "httpd_can_network_connect_db", "1"},
+		{"sudo", "setsebool", "-P", "httpd_can_network_connect_redis", "1"},
+		{"sudo", "setsebool", "-P", "httpd_unified", "1"},
+	})
 
-	// Permitir a Octane (vía nginx/fpm) escribir en storage y bootstrap/cache.
-	a.runIgnore("sudo", "semanage", "fcontext", "-a", "-t", "httpd_sys_rw_content_t",
-		pDir+"/storage(/.*)?")
-	a.runIgnore("sudo", "semanage", "fcontext", "-a", "-t", "httpd_sys_rw_content_t",
-		pDir+"/bootstrap/cache(/.*)?")
+	// semanage fcontext en paralelo: 2 reglas, cada una appenda a
+	// /etc/selinux/targeted/active/file_contexts.local con lock libsemanage.
+	a.runParallel([][]string{
+		{"sudo", "semanage", "fcontext", "-a", "-t", "httpd_sys_rw_content_t",
+			pDir + "/storage(/.*)?"},
+		{"sudo", "semanage", "fcontext", "-a", "-t", "httpd_sys_rw_content_t",
+			pDir + "/bootstrap/cache(/.*)?"},
+	})
 	a.runIgnore("sudo", "restorecon", "-R", pDir)
 
 	// Backup nginx.conf (idempotente).

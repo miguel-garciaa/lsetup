@@ -154,6 +154,7 @@ func subcmdHelpFlagSet(name string, args []string) (cfgPath string, install bool
 //
 //	status, backup, backup-verify, restore.
 func cmdUp(args []string) {
+	fmt.Fprintln(os.Stderr, "[lsetup] cmdUp: parsing flags...")
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
 	cfgPath := fs.String("config", "./lsetup.conf", "Ruta config file")
@@ -174,15 +175,18 @@ func cmdUp(args []string) {
 		return
 	}
 
+	fmt.Fprintf(os.Stderr, "[lsetup] cmdUp: config=%s\n", *cfgPath)
 	if !fileExists(*cfgPath) {
 		fmt.Fprintln(os.Stderr, "Config no existe. Ejecuta primero: lsetup init")
 		os.Exit(1)
 	}
+	fmt.Fprintln(os.Stderr, "[lsetup] cmdUp: leyendo config...")
 	cf, err := loadConfig(*cfgPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error leyendo config:", err)
 		os.Exit(1)
 	}
+	fmt.Fprintf(os.Stderr, "[lsetup] cmdUp: config OK, secciones=%v\n", cf.order)
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
