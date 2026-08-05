@@ -467,6 +467,24 @@ fi
 if systemctl list-unit-files 2>/dev/null | grep -q '^crowdsec\.service'; then
   systemctl enable --now crowdsec 2>/dev/null || true
 fi
+# (g) Registrar bouncer firewall + sustituir API key + arrancar.
+# El paquete crowdsec-firewall-bouncer-nftables instala config con placeholder
+# <API_KEY>; sin esto el bouncer no autentica contra LAPI y el servicio falla.
+# Idempotencia: solo registrar si placeholder sigue (no re-registrar en re-runs).
+if command -v cscli &>/dev/null && systemctl is-active --quiet crowdsec; then
+    BOUNCER_CFG=/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+    if [ -f "$BOUNCER_CFG" ] && grep -q '<API_KEY>' "$BOUNCER_CFG" 2>/dev/null; then
+        BOUNCER_KEY=$(cscli bouncers add lsetup-firewall-bouncer -o raw 2>/dev/null)
+        if [ -n "$BOUNCER_KEY" ]; then
+            sed -i "s|api_key: <API_KEY>|api_key: ${BOUNCER_KEY}|" "$BOUNCER_CFG"
+            systemctl enable --now crowdsec-firewall-bouncer 2>/dev/null || true
+            echo "   >> Bouncer firewall registrado (lsetup-firewall-bouncer) + api_key inyectada."
+        else
+            echo "   [WARN]  cscli bouncers add falló. Bouncer no registrado."
+            echo "   Manual: sudo cscli bouncers add lsetup-firewall-bouncer -o raw"
+        fi
+    fi
+fi
 
 # ------------------------------------------------------------------------------
 # 6. HARDENING NGINX + CLOUDFLARE IPS + BLOQUEO /.ENV

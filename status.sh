@@ -36,6 +36,7 @@ printf "  %-22s %s\n" "firewalld" "$(svc_state firewalld)"
 printf "  %-22s %s\n" "chronyd" "$(svc_state chronyd)"
 printf "  %-22s %s\n" "fail2ban" "$(svc_state fail2ban)"
 printf "  %-22s %s\n" "crowdsec" "$(svc_state crowdsec)"
+printf "  %-22s %s\n" "crowdsec-firewall-bouncer" "$(svc_state crowdsec-firewall-bouncer)"
 printf "  %-22s %s\n" "dnf-automatic.timer" "$(svc_state dnf-automatic.timer)"
 printf "  %-22s %s\n" "clamav-freshclam" "$(svc_state clamav-freshclam)"
 printf "  %-22s %s\n" "atd" "$(svc_state atd)"
@@ -125,6 +126,15 @@ fi
 echo "  crowdsec:"
 echo "    systemctl: $(svc_active crowdsec)"
 if sudo cscli status >/dev/null 2>&1; then
+  echo "    funcional: OK"
+else
+  echo "    funcional: FAIL"
+fi
+
+# crowdsec-firewall-bouncer — programa reglas nftables desde decisiones LAPI
+echo "  crowdsec-firewall-bouncer:"
+echo "    systemctl: $(svc_active crowdsec-firewall-bouncer)"
+if systemctl is-active --quiet crowdsec-firewall-bouncer 2>/dev/null; then
   echo "    funcional: OK"
 else
   echo "    funcional: FAIL"
