@@ -16,6 +16,7 @@ import (
 //
 //	init              genera lsetup.conf template (aborta si existe, --force override)
 //	up                ejecuta pipeline completo (setup→dominio→waf→harden→secure→backup-install)
+//	debug <cmd>       ejecuta <cmd> con LSETUP_DEBUG=1 (verbose logs en scripts bash)
 //	2fa --on/--off    activa/desactiva 2FA SSH
 //	status            panel auditoría (sec-logs + SERVICIOS LSETUP)
 //	backup            snapshots (cron-driven)
@@ -45,28 +46,60 @@ func main() {
 		printHelp()
 		os.Exit(2)
 	}
-	switch args[0] {
+	dispatch(args[0], args[1:])
+}
+
+// dispatch ejecuta un subcomando por nombre. Separado de main para que
+// `lsetup debug <cmd>` pueda reusar el mismoswitch tras setear LSETUP_DEBUG=1.
+func dispatch(name string, args []string) {
+	switch name {
 	case "init":
-		cmdInit(args[1:])
+		cmdInit(args)
 	case "up":
-		cmdUp(args[1:])
+		cmdUp(args)
 	case "2fa":
-		cmd2fa(args[1:])
+		cmd2fa(args)
 	case "status":
-		cmdStatus(args[1:])
+		cmdStatus(args)
 	case "backup":
-		cmdBackup(args[1:])
+		cmdBackup(args)
 	case "backup-verify":
-		cmdBackupVerify(args[1:])
+		cmdBackupVerify(args)
 	case "restore":
-		cmdRestore(args[1:])
+		cmdRestore(args)
+	case "debug":
+		cmdDebug(args)
 	case "-h", "--help", "help":
 		printHelp()
 	default:
-		fmt.Fprintf(os.Stderr, "Subcomando desconocido: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "Subcomando desconocido: %s\n", name)
 		printHelp()
 		os.Exit(2)
 	}
+}
+
+// cmdDebug ejecuta otro subcomando con LSETUP_DEBUG=1 inyectado en env.
+// Sintaxis: lsetup debug <subcomando> [args...]
+//
+// Los scripts bash embebidos (waf.sh, secure.sh, etc.) inspect LSETUP_DEBUG:
+//   - Si "1": no silencian logs (mount /tmp/*.log a stdout/stderr directo,
+//     set -x traza comandos, configure/make show output completo).
+//   - Si unset o !=1: comportamiento normal (logs a /tmp, tail en error).
+//
+// Útil durante desarrollo para ver dónde/atrás de un fallo sin recompilar.
+func cmdDebug(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Uso: lsetup debug <subcomando> [args...]")
+		fmt.Println("  Ejecuta subcomando con LSETUP_DEBUG=1 (verbose en scripts bash).")
+		fmt.Println("  Ejemplo: lsetup debug up")
+		fmt.Println("           lsetup debug 2fa --on")
+		return
+	}
+	if err := os.Setenv("LSETUP_DEBUG", "1"); err != nil {
+		fmt.Fprintln(os.Stderr, "Aviso: no se pudo setear LSETUP_DEBUG:", err)
+	}
+	fmt.Fprintln(os.Stderr, "[lsetup] DEBUG mode: LSETUP_DEBUG=1 (verbose logs en scripts bash)")
+	dispatch(args[0], args[1:])
 }
 
 // aliasCmd devuelve el comando a ejecutar si el binario fue invocado por un
@@ -95,6 +128,7 @@ func printHelp() {
 	fmt.Println("SUBCOMANDOS:")
 	fmt.Println("  init              Genera ./lsetup.conf template (multi-sección)")
 	fmt.Println("  up                Ejecuta pipeline completo (setup→dominio→waf→harden→secure→backup-install)")
+	fmt.Println("  debug <cmd>       Ejecuta <cmd> con LSETUP_DEBUG=1 (verbose en scripts bash)")
 	fmt.Println("  2fa --on          Activa 2FA SSH (Google Authenticator PAM)")
 	fmt.Println("  2fa --off         Desactiva 2FA SSH")
 	fmt.Println("  status            Panel de auditoría (sec-logs + SERVICIOS LSETUP DB+HTTP)")

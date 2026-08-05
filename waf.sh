@@ -10,6 +10,14 @@ set -e
 # (CRS 4 rompe uploads Filament Media Library por multipart regex 942100).
 # ==============================================================================
 
+# LSETUP_DEBUG=1 (inyectado por `lsetup debug <cmd>`) → verbose total:
+#   - set -x traza cada comando
+#   - logs de dnf/configure/make fluyen a stdout/stderr (no a /tmp/*.log)
+#   - Sin silenciar nada, ver para diagnosticar fallos en desarrollo.
+if [ "${LSETUP_DEBUG:-0}" = "1" ]; then
+  set -x
+fi
+
 if [ "$EUID" -ne 0 ]; then
   echo "[WARN] Ejecuta este script como root o con sudo."
   exit 1
@@ -44,20 +52,30 @@ fi
 echo ">> [1/6] Instalando dependencias build + runtime..."
 # Deps críticas (si falta alguna, configure/build fallan). Instalar primero
 # con log visible para diagnosticar paquetes inexistentes en AlmaLinux 10.
+# yajl-devel movido a opcional: NO existe en AL10 default (lib unavailable en
+# CRB/EPEL10). ModSecurity compila sin él (JSON parsing limitado pero funcional).
 CRIT_DEPS="git gcc gcc-c++ make automake autoconf libtool pkgconfig \
-  pcre2-devel yajl-devel libxml2-devel curl-devel openssl-devel wget"
-if ! dnf install -y $CRIT_DEPS >/tmp/waf_deps.log 2>&1; then
-  echo "[ERROR] dnf install deps críticas falló. Últimas 40 líneas:"
-  tail -n 40 /tmp/waf_deps.log
-  exit 1
+  pcre2-devel libxml2-devel curl-devel openssl-devel wget"
+if [ "${LSETUP_DEBUG:-0}" = "1" ]; then
+  if ! dnf install -y $CRIT_DEPS; then
+    echo "[ERROR] dnf install deps críticas falló (verbose arriba)."
+    exit 1
+  fi
+else
+  if ! dnf install -y $CRIT_DEPS >/tmp/waf_deps.log 2>&1; then
+    echo "[ERROR] dnf install deps críticas falló. Últimas 40 líneas:"
+    tail -n 40 /tmp/waf_deps.log
+    exit 1
+  fi
 fi
 
 # Deps opcionales (pueden no existir en AlmaLinux 10 — configure las ignora
 # si faltan, módulos esos features quedan deshabilitados, no es fatal).
+# yajl-devel: JSON parser avanzado (no en AL10 default).
 # ssdeep-devel: fuzzy hashing (recomendado pero opcional).
 # libmaxminddb-devel: GeoIP2 (recomendado pero opcional).
 # geoip-devel: GeoIP1 legado (deprecated, solo si lo quieres).
-OPT_DEPS="ssdeep-devel libmaxminddb-devel geoip-devel"
+OPT_DEPS="yajl-devel ssdeep-devel libmaxminddb-devel geoip-devel"
 MISSING_OPT=""
 for pkg in $OPT_DEPS; do
   if dnf install -y "$pkg" >/dev/null 2>&1; then
@@ -96,6 +114,31 @@ for pkg in nginx-mod_security nginx-module-modsecurity mod_security-nginx; do
 done
 
 # ------------------------------------------------------------------------------
+# Helper: run_log CMD... — ejecuta CMD; silencia a /tmp/waf_*.log si no debug,
+# pasa stdout/stderr al terminal si LSETUP_DEBUG=1. En fallo: tail del log + exit 1.
+# Uso ( desde llamada bash, sin +set):
+#   run_log "msg descriptiva" /tmp/waf_X.log ./build.sh
+# ------------------------------------------------------------------------------
+run_log() {
+  local desc="$1"; shift
+  local logfile="$1"; shift
+  if [ "${LSETUP_DEBUG:-0}" = "1" ]; then
+    # Modo verbose: nada de logs, output fluye al terminal.
+    if ! "$@"; then
+      echo "[ERROR] $desc falló (verbose arriba)."
+      exit 1
+    fi
+  else
+    # Modo normal: silencioso, captura a logfile para tail en error.
+    if ! "$@" >"$logfile" 2>&1; then
+      echo "[ERROR] $desc falló. Últimas 60 líneas de $logfile:"
+      tail -n 60 "$logfile"
+      exit 1
+    fi
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # 3. Fallback: compilar libmodsecurity v3 + nginx connector (módulo dinámico)
 # ------------------------------------------------------------------------------
 if [ -z "$MODSEC_SO" ]; then
@@ -124,42 +167,32 @@ if [ -z "$MODSEC_SO" ]; then
   cd "$BUILD_DIR/libmodsecurity"
   # Submódulos críticos: build.sh los necesita (cf Dayanna Suzuki, etc.).
   # Sin GIT_TERMINAL_PROMPT=0 + credential.helper= para submódulos GitHub.
-  if ! git submodule update --init --recursive 2>/tmp/waf_submod.log; then
-      echo "[ERROR] libmodsecurity submodule update falló. Últimas 40 líneas:"
-      tail -n 40 /tmp/waf_submod.log
-      exit 1
-  fi
+  run_log "libmodsecurity submodule update" /tmp/waf_submod.log \
+      git submodule update --init --recursive
   if [ ! -f configure ]; then
       echo "   >> Ejecutando build.sh (genera configure)..."
-      if ! ./build.sh >/tmp/waf_build.log 2>&1; then
-          echo "[ERROR] libmodsecurity build.sh falló. Últimas 60 líneas:"
-          tail -n 60 /tmp/waf_build.log
-          echo ""
-          echo "   Causas típicas: falta autoconf/automake/libtool, o"
-          echo "   submódulos no inicializados. Ver logs arriba."
-          exit 1
-      fi
+      run_log "libmodsecurity build.sh" /tmp/waf_build.log ./build.sh
   fi
   echo "   >> Ejecutando configure..."
-  if ! ./configure >/tmp/waf_configure.log 2>&1; then
-      echo "[ERROR] libmodsecurity configure falló. Últimas 60 líneas:"
-      tail -n 60 /tmp/waf_configure.log
-      echo ""
-      echo "   Causas típicas:"
-      echo "     - Falta pkgconfig: pcre2-devel, yajl-devel, libxml2-devel"
-      echo "     - libmaxminddb-devel o ssdeep-devel no instalados correctamente"
-      echo "     - curl-devel u openssl-devel ausentes"
-      echo "   Revisa el log completo: /tmp/waf_configure.log"
-      exit 1
-  fi
+  run_log "libmodsecurity configure" /tmp/waf_configure.log ./configure
+
   echo "   >> Compilando libmodsecurity (make -j$(nproc))..."
-  if ! make -j"$(nproc)" >/tmp/waf_make.log 2>&1; then
-      echo "[ERROR] libmodsecurity make falló. Últimas 40 líneas:"
-      tail -n 40 /tmp/waf_make.log
-      echo ""
-      echo "   Causas típicas: OOM (baja RAM para -j$(nproc)), falta gcc-c++."
-      echo "   Alternativa: ejecuta 'make -j1' manualmente en $BUILD_DIR/libmodsecurity"
-      exit 1
+  if [ "${LSETUP_DEBUG:-0}" = "1" ]; then
+      if ! make -j"$(nproc)"; then
+          echo "[ERROR] libmodsecurity make falló (verbose arriba)."
+          echo "   Causas típicas: OOM (baja RAM para -j$(nproc)), falta gcc-c++."
+          echo "   Alternativa: ejecuta 'make -j1' manualmente en $BUILD_DIR/libmodsecurity"
+          exit 1
+      fi
+  else
+      if ! make -j"$(nproc)" >/tmp/waf_make.log 2>&1; then
+          echo "[ERROR] libmodsecurity make falló. Últimas 40 líneas:"
+          tail -n 40 /tmp/waf_make.log
+          echo ""
+          echo "   Causas típicas: OOM (baja RAM para -j$(nproc)), falta gcc-c++."
+          echo "   Alternativa: ejecuta 'make -j1' manualmente en $BUILD_DIR/libmodsecurity"
+          exit 1
+      fi
   fi
   make install >/tmp/waf_make_install.log 2>&1 || true
   ldconfig
@@ -183,22 +216,10 @@ if [ -z "$MODSEC_SO" ]; then
   cd "nginx-$NGINX_VER"
   echo "   >> Configurando connector nginx (vs nginx $NGINX_VER)..."
   # shellcheck disable=SC2086
-  if ! ./configure --with-compat --add-dynamic-module=../ModSecurity-nginx \
-          $NGINX_CONFIG_ARGS >/tmp/waf_nginx_configure.log 2>&1; then
-      echo "[ERROR] nginx connector configure falló. Últimas 60 líneas:"
-      tail -n 60 /tmp/waf_nginx_configure.log
-      echo ""
-      echo "   Alternativa: añade el repo nginx.org (nginx-stable) y dnf install"
-      echo "   nginx-module-modsecurity (módulo precompilado compatible)."
-      echo "   Logs: /tmp/waf_nginx_configure.log"
-      exit 1
-  fi
+  run_log "nginx connector configure" /tmp/waf_nginx_configure.log \
+      ./configure --with-compat --add-dynamic-module=../ModSecurity-nginx $NGINX_CONFIG_ARGS
   echo "   >> Compilando módulo nginx (make modules)..."
-  if ! make modules >/tmp/waf_nginx_make.log 2>&1; then
-      echo "[ERROR] make modules falló. Últimas 40 líneas:"
-      tail -n 40 /tmp/waf_nginx_make.log
-      exit 1
-  fi
+  run_log "make modules" /tmp/waf_nginx_make.log make modules
   mkdir -p /usr/lib64/nginx/modules
   cp objs/ngx_http_modsecurity_module.so /usr/lib64/nginx/modules/ \
       || { echo "[ERROR] copia .so falló."; exit 1; }
