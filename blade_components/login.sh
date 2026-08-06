@@ -305,10 +305,10 @@ cat << 'EOF' > resources/views/welcome.blade.php
               </div>
           @else
               <div class="pt-4 bg-slate-900/80 border border-slate-800 rounded-2xl p-6 max-w-md mx-auto shadow-xl">
-                  <p class="text-sm text-slate-400">Has iniciado sesión correctamente como:</p>
-                  <p class="text-lg font-bold text-white mt-1">{{ Auth::user()->email }}</p>
-              </div>
-          @endauth
+<p class="text-sm text-slate-400">Has iniciado sesión correctamente como:</p>
+                   <p class="text-lg font-bold text-white mt-1">{{ Auth::user()->email }}</p>
+               </div>
+           @endguest
       </div>
   </main>
 
