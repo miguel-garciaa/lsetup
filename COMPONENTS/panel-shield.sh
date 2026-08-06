@@ -2,404 +2,614 @@
 set -e
 
 # ==============================================================================
-# FILAMENT 5 + SHIELD + USUARIO ADMIN
-# A ejecutar DESPUÉS de setup.sh (requiere proyecto Laravel ya desplegado).
-# No instala Spatie Media Library: el binario static FrankenPHP no embede
-# ext-zip/fileinfo y rompe el boot del worker. Re-añadir tras rebuild binario.
+# FILAMENT SHIELD + RBAC (MODULO POSTERIOR AL PANEL BASE)
+# Ejecutar como root desde la raiz del proyecto Laravel despues de panel-install.
+# Promueve al administrador creado por panel-install; no crea ni pide usuarios.
 # ==============================================================================
 
-echo "=========================================================================="
-echo "    FILAMENT 5 + SHIELD + ADMIN    "
-echo "=========================================================================="
-
-# ------------------------------------------------------------------------------
-# 1. DETECCIÓN DE RUTA DEL PROYECTO LARAVEL
-# ------------------------------------------------------------------------------
-DEFAULT_DIR="/var/www/laravel1"
-if [ -f "./.env" ]; then
-  DEFAULT_DIR="$(pwd)"
+if [ "$EUID" -ne 0 ]; then
+    echo "[ERROR] Ejecuta este script como root o con sudo."
+    exit 1
 fi
 
-read -p "Ruta del proyecto Laravel [$DEFAULT_DIR]: " PROYECTO_DIR
-PROYECTO_DIR=${PROYECTO_DIR:-$DEFAULT_DIR}
-
-if [ ! -d "$PROYECTO_DIR" ] || [ ! -f "$PROYECTO_DIR/.env" ]; then
-  echo "[ERROR] Error: No se encontró un proyecto Laravel con .env en $PROYECTO_DIR"
-  exit 1
+if [ "$#" -ne 0 ]; then
+    echo "Uso: sudo ./panel-shield.sh"
+    echo "El administrador se obtiene de PANEL_ADMIN_EMAIL creado por panel-install.sh."
+    exit 1
 fi
 
-cd "$PROYECTO_DIR"
-
-# Composer/artisan NUNCA como root: mismo patrón que setup.sh (as_laravel).
-# octane.service exporta APP_ENV=production: caches/route:cache se corren bajo
-# ese mismo env para que el runtime coincida con lo cacheado.
 LARAVEL_USER="laravel"
 LARAVEL_HOME="/var/lib/laravel"
-as_laravel() {
-  sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" bash -lc "cd '$PROYECTO_DIR' && $*"
-}
+PROYECTO_DIR=$(readlink -f -- "$(pwd)")
 
-# ------------------------------------------------------------------------------
-# 2. CREDENCIALES DEL ADMINISTRADOR DEL PANEL
-# ------------------------------------------------------------------------------
-echo "--------------------------------------------------------------------------"
-echo " CONFIGURACIÓN DEL ADMINISTRADOR DEL PANEL"
-echo "--------------------------------------------------------------------------"
-read -p "Nombre usuario admin [Admin]: " ADMIN_NAME
-ADMIN_NAME=${ADMIN_NAME:-Admin}
-read -p "Correo del admin (obligatorio): " ADMIN_EMAIL
-while [ -z "$ADMIN_EMAIL" ]; do read -p "Correo del admin (obligatorio): " ADMIN_EMAIL; done
-read -rsp "Contraseña del admin (obligatoria): " ADMIN_PASS; echo
-while [ -z "$ADMIN_PASS" ]; do read -rsp "Contraseña del admin (obligatoria): " ADMIN_PASS; echo; done
-
-# ------------------------------------------------------------------------------
-# 3. DIAGNÓSTICO PRE-FILAMENT: ¿Octane bootea ya?
-# Si setup.sh dejó Octane en crash-loop, instalar Filament por encima solo
-# añade ruido. Exponemos el fatal real PHP del worker antes de tocar nada.
-# ------------------------------------------------------------------------------
-echo "--------------------------------------------------------------------------"
-echo " DIAGNÓSTICO: boot actual de Octane (FrankenPHP)"
-echo "--------------------------------------------------------------------------"
-
-diagnosticar_octane() {
-  echo "  - systemctl is-active octane: $(systemctl is-active octane 2>/dev/null || true)"
-  if ss -ltn 2>/dev/null | grep -q ':8000 '; then
-      echo "  - Puerto 8000: ESCUCHANDO (octane booteado)"
-      return 0
-  else
-      echo "  - Puerto 8000: NO escucha (octane caído o crash-loop)"
-      return 1
-  fi
-}
-
-diagnosticar_octane || {
-  echo "  Octane NO escucha :8000. Capturando fatal real del worker (foreground 6s)…"
-  sudo systemctl stop octane 2>/dev/null || true
-  # Foreground: arranca worker, deja que FrankenPHP imprima el fatal PHP, mata a 6s.
-  sudo timeout 6s runuser -u "$LARAVEL_USER" -- env HOME="$LARAVEL_HOME" \
-      bash -lc "cd '$PROYECTO_DIR' && APP_ENV=production /usr/bin/php artisan octane:start \
-          --server=frankenphp --host=127.0.0.1 --port=8000 --workers=1 --max-requests=10" \
-      2>&1 | tail -40 || true
-  # Trazar el worker directamente expone el PHP fatal aunque FrankenPHP se trague stderr.
-  if [ -f "$PROYECTO_DIR/public/frankenphp-worker.php" ]; then
-      echo "  ---- worker script directo (top fatal) ----"
-      sudo timeout 5s runuser -u "$LARAVEL_USER" -- env HOME="$LARAVEL_HOME" \
-          bash -lc "cd '$PROYECTO_DIR' && APP_ENV=production /usr/bin/php public/frankenphp-worker.php" \
-          2>&1 | head -30 || true
-  fi
-  # Laravel log (a veces captura antes del fatal si ya booteó partialmente).
-  if [ -s "$PROYECTO_DIR/storage/logs/laravel.log" ]; then
-      echo "  ---- últimos 30 líneas storage/logs/laravel.log ----"
-      sudo tail -n 30 "$PROYECTO_DIR/storage/logs/laravel.log" 2>/dev/null || true
-  fi
-  echo "--------------------------------------------------------------------------"
-  echo " Si el trace anterior muestra un fatal claro (Class not found,undefined"
-  echo " method, ext-*, Permission denied), corrige esa causa raíz y re-ejecuta"
-  echo " panel.sh. Filament no ara un Octane que no bootea."
-  echo "--------------------------------------------------------------------------"
-  read -p "¿Continuar instalando Filament igualmente? [s/N]: " CONT
-  [ "$CONT" = "s" ] || [ "$CONT" = "S" ] || { echo "Abortado."; exit 1; }
-}
-
-# ------------------------------------------------------------------------------
-# 4. FILAMENT 5
-# ------------------------------------------------------------------------------
-echo " [1/6] Instalando Filament 5..."
-as_laravel "composer require filament/filament:\"^5.0\" -W --no-interaction"
-as_laravel "composer dump-autoload -o"
-as_laravel "php artisan filament:install --panels --no-interaction"
-
-# Sin ->login() en el panel, /admin redirige a la ruta genérica 'login'
-# (inexistente) → RouteNotFoundException. Se parchea con PHP (no sed) para
-# evitar problemas de escaping. Inserta ->login() tras ->default() o, en su
-# defecto, tras 'return $panel'.
-sudo -u "$LARAVEL_USER" bash -c "cat > '$PROYECTO_DIR/patch_panel.php' << 'PHP'
-<?php
-\$f = __DIR__.'/app/Providers/Filament/AdminPanelProvider.php';
-\$c = file_get_contents(\$f);
-if (strpos(\$c, '->login(') === false) {
-  \$anchor = '->default()';
-  \$pos = strpos(\$c, \$anchor);
-  if (\$pos === false) {
-      \$anchor = 'return \$panel';
-      \$pos = strpos(\$c, \$anchor);
-  }
-  if (\$pos !== false) {
-      \$insertAt = \$pos + strlen(\$anchor);
-      \$c = substr(\$c, 0, \$insertAt).'->login()'.substr(\$c, \$insertAt);
-      file_put_contents(\$f, \$c);
-      echo \"AdminPanelProvider: ->login() añadido\n\";
-  } else {
-      echo \"AdminPanelProvider: ancla no encontrada, añade ->login() manualmente\n\";
-      exit(1);
-  }
-} else {
-  echo \"AdminPanelProvider: ->login() ya presente\n\";
-}
-PHP"
-as_laravel "php patch_panel.php && rm -f patch_panel.php"
-
-# Asegurar registro del provider en bootstrap/providers.php (Filament 5 lo
-# suele auto-registrar, pero falla en algunas instalaciones --no-interaction).
-sudo -u "$LARAVEL_USER" bash -c "cat > '$PROYECTO_DIR/patch_providers.php' << 'PHP'
-<?php
-\$f = __DIR__.'/bootstrap/providers.php';
-\$c = file_get_contents(\$f);
-\$cls = 'App\\\\Providers\\\\Filament\\\\AdminPanelProvider';
-if (strpos(\$c, \$cls) === false) {
-  \$c = preg_replace(
-      '/(\\])\\s*;\\s*\$/',
-      \"    \\\\App\\\\Providers\\\\Filament\\\\AdminPanelProvider::class,\n];\",
-      \$c
-  );
-  file_put_contents(\$f, \$c);
-  echo \"providers.php: AdminPanelProvider registrado\n\";
-} else {
-  echo \"providers.php: AdminPanelProvider ya registrado\n\";
-}
-PHP"
-as_laravel "php patch_providers.php && rm -f patch_providers.php"
-
-# ------------------------------------------------------------------------------
-# 4.5 TRUST PROXIES (Octane detrás de Nginx HTTPS)
-# Livewire/Filament generan endpoints con Request::getScheme()/getHost().
-# Octane recibe 127.0.0.1:8000 directo de Nginx; scheme=http. Sin TrustProxies
-# Laravel ignora X-Forwarded-Proto=https => endpoints http:// => mixed content
-# => navegador bloquea POST del login => "botón no hace nada".
-# Capa 1: trustProxies(at: '*') en bootstrap/app.php.
-# Capa 2 (defensa): URL::forceScheme('https') en AppServiceProvider en production.
-# ------------------------------------------------------------------------------
-echo " [extra] Parcheando TrustProxies + forceScheme('https')..."
-sudo -u "$LARAVEL_USER" bash -c "cat > '$PROYECTO_DIR/patch_trust.php' << 'PHP'
-<?php
-// --- bootstrap/app.php: trustProxies ---
-\$bf = __DIR__.'/bootstrap/app.php';
-\$bc = file_get_contents(\$bf);
-\$changed = false;
-if (strpos(\$bc, 'trustProxies') === false) {
-  \$anchor = '->withMiddleware(function (Middleware \$middleware) {';
-  \$pos = strpos(\$bc, \$anchor);
-  if (\$pos !== false) {
-      \$insertAt = \$pos + strlen(\$anchor);
-      \$bc = substr(\$bc, 0, \$insertAt)
-          . \"\\n        \\\$middleware->trustProxies(at: '*');\"
-          . substr(\$bc, \$insertAt);
-      file_put_contents(\$bf, \$bc);
-      echo \"bootstrap/app.php: trustProxies(at: '*') agregado\\n\";
-      \$changed = true;
-  } else {
-      echo \"bootstrap/app.php: ancla withMiddleware no encontrada (revisar manualmente)\\n\";
-  }
-} else {
-  echo \"bootstrap/app.php: trustProxies ya presente\\n\";
-}
-
-// --- app/Providers/AppServiceProvider.php: forceScheme en production ---
-\$af = __DIR__.'/app/Providers/AppServiceProvider.php';
-\$ac = file_get_contents(\$af);
-if (strpos(\$ac, 'forceScheme') === false) {
-  // Encolar el import tras 'use Illuminate\\Support\\ServiceProvider;'
-  \$ac = str_replace(
-      'use Illuminate\\\\Support\\\\ServiceProvider;',
-      \"use Illuminate\\\\Support\\\\ServiceProvider;\\nuse Illuminate\\\\Support\\\\Facades\\\\URL;\",
-      \$ac
-  );
-  // Insertar dentro de boot() -- buscar 'public function boot(): void' y la primera '{' tras el
-  \$bootPos = strpos(\$ac, 'public function boot');
-  if (\$bootPos !== false) {
-      \$bracePos = strpos(\$ac, '{', \$bootPos);
-      if (\$bracePos !== false) {
-          \$insertAt = \$bracePos + 1;
-          \$ac = substr(\$ac, 0, \$insertAt)
-              . \"\\n        if (\\\$this->app->environment('production')) {\\n            URL::forceScheme('https');\\n        }\"
-              . substr(\$ac, \$insertAt);
-          file_put_contents(\$af, \$ac);
-          echo \"AppServiceProvider: URL::forceScheme('https') agregado en production\\n\";
-          \$changed = true;
-      }
-  }
-} else {
-  echo \"AppServiceProvider: forceScheme ya presente\\n\";
-}
-exit(\$changed ? 0 : 0);
-PHP"
-as_laravel "php patch_trust.php && rm -f patch_trust.php"
-# Forzar re-cache de config tras tocar bootstrap/app.php + providers (se hace en
-# paso 9 de todas formas, pero aqui aseguramos chown por si acaso).
-sudo chown -R "$LARAVEL_USER":"$LARAVEL_USER" "$PROYECTO_DIR/bootstrap" "$PROYECTO_DIR/app/Providers" 2>/dev/null || true
-
-# ------------------------------------------------------------------------------
-# 5. FILAMENT SHIELD + SPATIE PERMISSION
-# ------------------------------------------------------------------------------
-echo " [2/6] Instalando Filament Shield..."
-as_laravel "composer require bezhansalleh/filament-shield --no-interaction"
-# dump-autoload -o: sin ello el autoload map no registra las migraciones de
-# Spatie laravel-permission (auto-descubiertas vía loadMigrationsFrom) y
-# `php artisan migrate` no las ve -> tablas permissions/roles NO se crean ->
-# shield:generate peta con PDO "relation permissions does not exist".
-as_laravel "composer dump-autoload -o"
-# shield:install requiere el id del panel ('admin') en modo --no-interaction:
-# sin él lanza NonInteractiveValidationException.
-as_laravel "php artisan shield:install admin --no-interaction"
-# spatie/laravel-permission: publicar migraciones (idempotente) y migrar ANTES
-# de generate. --force para no interactivo.
-as_laravel "php artisan vendor:publish --provider=\"Spatie\Permission\PermissionServiceProvider\" --tag=\"permission-migrations\" --force" || true
-as_laravel "APP_ENV=production php artisan migrate --force"
-# Migraciones de Spatie laravel-permission: aunque dump-autoload precedente
-# deberia permitir su auto-descubrimiento, en algunos setups no se registran
-# y `migrate --force` las salta -> shield:generate peta con PDO "relation
-# permissions does not exist" -> set -e aborta antes de crear admin -> /admin 403.
-# --path explicito es idempotente: si ya corrieron via generic migrate, son
-# no-op (registradas en `migrations` table); si no, se crean ahora.
-as_laravel "APP_ENV=production php artisan migrate --path=vendor/spatie/laravel-permission/database/migrations --force" || true
-# shield:generate con || true: si falla (permisos a medias de run previa, etc),
-# no aborta el script — el admin se crea igual con syncRoles super_admin (bypass
-# Shield a nivel panel access) y el warning deja rastro para depuracion.
-as_laravel "php artisan shield:generate --all --panel=admin --no-interaction" || \
-  echo "  AVISO: shield:generate falló (ver log). super_admin role sigue valiendo para panel access."
-
-# ------------------------------------------------------------------------------
-# 6. TRAIT HasRoles EN User (obligatorio para assignRole de spatie)
-# ------------------------------------------------------------------------------
-echo " [3/6] Parcheando User.php con HasRoles y FilamentUser..."
-sudo -u "$LARAVEL_USER" bash -c "cat > '$PROYECTO_DIR/patch_user.php' << 'PHP'
-<?php
-\$f = __DIR__ . '/app/Models/User.php';
-\$c = file_get_contents(\$f);
-\$changed = false;
-
-if (strpos(\$c, 'HasRoles') === false) {
-  \$c = str_replace(
-      'use Illuminate\\\\Notifications\\\\Notifiable;',
-      \"use Illuminate\\\\Notifications\\\\Notifiable;\nuse Spatie\\\\Permission\\\\Traits\\\\HasRoles;\",
-      \$c
-  );
-  \$c = str_replace(
-      'use HasFactory, Notifiable;',
-      'use HasFactory, Notifiable, HasRoles;',
-      \$c
-  );
-  \$changed = true;
-  echo \"User.php parcheado con HasRoles\n\";
-} else {
-  echo \"User.php ya tiene HasRoles\n\";
-}
-
-if (strpos(\$c, 'FilamentUser') === false) {
-  \$c = str_replace(
-      'class User extends Authenticatable',
-      'class User extends Authenticatable implements \\\\Filament\\\\Models\\\\Contracts\\\\FilamentUser',
-      \$c
-  );
-  \$c = str_replace(
-      'use HasFactory, Notifiable, HasRoles;',
-      'use HasFactory, Notifiable, HasRoles, \\\\BezhanSalleh\\\\FilamentShield\\\\Traits\\\\HasPanelShield;',
-      \$c
-  );
-  \$changed = true;
-  echo \"User.php parcheado con FilamentUser y HasPanelShield\n\";
-} else {
-  echo \"User.php ya implementa FilamentUser\n\";
-}
-
-if (\$changed) {
-  file_put_contents(\$f, \$c);
-}
-PHP"
-as_laravel "php patch_user.php && rm -f patch_user.php"
-
-# ------------------------------------------------------------------------------
-# 7. USUARIO ADMIN DEL PANEL
-# syncRoles (no assignRole): idempotente — si ya tenía el rol no duplica, y
-# si el rol falto por un shield:install roto lo (re)asigna. updateOrCreate para
-# que re-ejecutar panel.sh actualice name/pass (intencional) sin duplicar.
-# firstOrCreate del Role super_admin cubre el caso de shield:install abortado.
-# Vars via env() como el original: el --execute va entre single-quotes y $VAR
-# NO se expande ahi; export previo + env("VAR") en PHP es el patron seguro del
-# repo (mismo de login.sh para evitar inyeccion desde secrets).
-# ------------------------------------------------------------------------------
-echo " [4/6] Creando/actualizando usuario admin..."
-as_laravel "export ADMIN_NAME='$ADMIN_NAME' ADMIN_EMAIL='$ADMIN_EMAIL' ADMIN_PASS='$ADMIN_PASS'; \
-  php artisan tinker --execute='
-use Spatie\Permission\Models\Role;
-Role::firstOrCreate([\"name\" => \"super_admin\", \"guard_name\" => \"web\"]);
-\$u = \App\Models\User::updateOrCreate(
-  [\"email\" => env(\"ADMIN_EMAIL\")],
-  [\"name\" => env(\"ADMIN_NAME\"), \"password\" => bcrypt(env(\"ADMIN_PASS\"))]
-);
-\$u->syncRoles([\"super_admin\"]);
-echo \"Admin: \" . \$u->email . \" | roles: \" . \$u->roles->pluck(\"name\")->implode(\",\") . PHP_EOL;
-'"
-
-# ------------------------------------------------------------------------------
-# 8. DEBUGBAR (solo dev)
-# ------------------------------------------------------------------------------
-echo " [5/6] Instalando Debugbar (dev)..."
-as_laravel "composer require barryvdh/laravel-debugbar --dev --no-interaction"
-
-# ------------------------------------------------------------------------------
-# 9. MIGRACIONES, STORAGE LINK, CACHE
-# Las caches se corren con APP_ENV=production para coincidir con octane.service
-# (Environment=APP_ENV=production). Cachear bajo local congela config divergente
-# y rompe el boot del worker.
-# ------------------------------------------------------------------------------
-echo " [6/6] Migrando, storage:link y cacheando (APP_ENV=production)..."
-as_laravel "php artisan storage:link --force || true"
-as_laravel "APP_ENV=production php artisan migrate --force"
-as_laravel "php artisan optimize:clear"
-as_laravel "APP_ENV=production php artisan config:cache"
-as_laravel "APP_ENV=production php artisan route:cache"
-
-# ------------------------------------------------------------------------------
-# 10. REINICIAR OCTANE — robusto: reset-failed + restart + healthcheck
-# El guard `if is-active` anterior fallaba cuando octane estaba en estado
-# `failed`/`activating (auto-restart)`: is-active devuelve false → reinicio
-# saltado → workers con rutas viejas → /admin 404.
-# ------------------------------------------------------------------------------
-echo "Reiniciando Octane Server..."
-sudo systemctl reset-failed octane 2>/dev/null || true
-sudo systemctl restart octane 2>/dev/null || sudo systemctl start octane 2>/dev/null || true
-
-# Healthcheck retry: esperar :8000 listening.
-OCTANE_UP=0
-for i in 1 2 3 4 5 6 7 8; do
-  sleep 1
-  if ss -ltn 2>/dev/null | grep -q ':8000 '; then
-      OCTANE_UP=1
-      echo "  Octane OK (:8000 listening tras $i intento(s))."
-      break
-  fi
-done
-
-if [ "$OCTANE_UP" -ne 1 ]; then
-  echo "  [ERROR] Octane NO escucha :8000 tras restart. Capturando fatal real del worker…"
-  sudo systemctl stop octane 2>/dev/null || true
-  sudo timeout 6s runuser -u "$LARAVEL_USER" -- env HOME="$LARAVEL_HOME" \
-      bash -lc "cd '$PROYECTO_DIR' && APP_ENV=production /usr/bin/php artisan octane:start \
-          --server=frankenphp --host=127.0.0.1 --port=8000 --workers=1 --max-requests=10" \
-      2>&1 | tail -40 || true
-  if [ -s "$PROYECTO_DIR/storage/logs/laravel.log" ]; then
-      echo "  ---- últimos 30 líneas storage/logs/laravel.log ----"
-      sudo tail -n 30 "$PROYECTO_DIR/storage/logs/laravel.log" 2>/dev/null || true
-  fi
-  echo "=========================================================================="
-  echo " Filament instalado pero Octane no bootea. Revisa el fatal arriba y aplica"
-  echo " el fix específico (ext faltante en binario FrankenPHP, config rota, etc)."
-  echo " Una vez corregido, basta con: sudo systemctl start octane"
-  echo "=========================================================================="
-  exit 1
+if ! id "$LARAVEL_USER" &>/dev/null; then
+    echo "[ERROR] No existe el usuario de aplicacion: $LARAVEL_USER"
+    exit 1
 fi
 
-# ----------------------------------------------------------------------------
-# 11. BANNER FINAL — URL real desde .env APP_URL (no placeholder).
-# ----------------------------------------------------------------------------
-PANEL_URL=$(awk -F= '/^APP_URL=/{gsub(/"/,"",$2);print $2; exit}' "$PROYECTO_DIR/.env" 2>/dev/null)
-PANEL_URL="${PANEL_URL:-http://<tu-dominio>}"
+if [ ! -d "$LARAVEL_HOME" ] || [ ! -f "$PROYECTO_DIR/.env" ] \
+    || [ ! -f "$PROYECTO_DIR/composer.json" ] || [ ! -f "$PROYECTO_DIR/artisan" ]; then
+    echo "[ERROR] Ejecuta el script desde la raiz de un proyecto Laravel valido."
+    exit 1
+fi
 
-echo "=========================================================================="
-echo " FILAMENT 5 CONFIGURADO"
-echo "=========================================================================="
-echo " Admin URL:  ${PANEL_URL}/admin"
-echo " Login:      $ADMIN_EMAIL  (contraseña: la introducida arriba)"
-echo " Panel:      Filament 5 + Shield"
-echo "=========================================================================="
+if [ ! -f "$PROYECTO_DIR/app/Providers/Filament/AdminPanelProvider.php" ]; then
+    echo "[ERROR] No existe AdminPanelProvider. Ejecuta primero panel-install.sh."
+    exit 1
+fi
+
+if ! grep -q '"filament/filament"' "$PROYECTO_DIR/composer.json"; then
+    echo "[ERROR] Filament no esta instalado. Ejecuta primero panel-install.sh."
+    exit 1
+fi
+
+ADMIN_EMAIL=$(awk -F= '/^PANEL_ADMIN_EMAIL=/{gsub(/"/, "", $2); print $2; exit}' "$PROYECTO_DIR/.env")
+if ! [[ "$ADMIN_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
+    echo "[ERROR] PANEL_ADMIN_EMAIL no existe o no es valido en .env."
+    echo "Ejecuta primero panel-install.sh para crear el administrador inicial."
+    exit 1
+fi
+
+# Composer y Artisan nunca se ejecutan como root. Los argumentos se pasan como
+# argv para que la ruta del proyecto no se interpole dentro de una cadena shell.
+as_laravel() {
+    sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" \
+        bash -c 'cd -- "$1"; shift; exec "$@"' bash "$PROYECTO_DIR" "$@"
+}
+
+as_laravel_with_admin_env() {
+    sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" \
+        "PANEL_ADMIN_EMAIL=$ADMIN_EMAIL" \
+        bash -c 'cd -- "$1"; shift; exec "$@"' bash "$PROYECTO_DIR" "$@"
+}
+
+PATCH_SCRIPT="$PROYECTO_DIR/.lsetup-shield-patch.php"
+ADMIN_SCRIPT="$PROYECTO_DIR/.lsetup-shield-admin.php"
+cleanup() {
+    rm -f "$PATCH_SCRIPT" "$ADMIN_SCRIPT"
+}
+trap cleanup EXIT
+
+echo "========================================================================="
+echo " FILAMENT SHIELD + ROLES"
+echo "========================================================================="
+echo " Administrador inicial: $ADMIN_EMAIL"
+
+# ------------------------------------------------------------------------------
+# 1. INSTALACION OFICIAL DE SHIELD Y SPATIE PERMISSION
+# ------------------------------------------------------------------------------
+echo " [1/7] Instalando Filament Shield..."
+as_laravel composer require 'bezhansalleh/filament-shield:^4.3' -W --no-interaction
+as_laravel composer dump-autoload -o
+
+if [ ! -f "$PROYECTO_DIR/config/filament-shield.php" ]; then
+    as_laravel php artisan vendor:publish --tag=filament-shield-config --no-interaction
+fi
+
+if ! find "$PROYECTO_DIR/database/migrations" -maxdepth 1 -type f -name '*create_permission_tables.php' -print -quit | grep -q .; then
+    as_laravel php artisan vendor:publish --provider='Spatie\Permission\PermissionServiceProvider' --tag=permission-migrations --no-interaction
+fi
+
+as_laravel php artisan shield:install admin --no-interaction
+
+# ------------------------------------------------------------------------------
+# 2. GENERADORES DE LARAVEL Y FILAMENT
+# ------------------------------------------------------------------------------
+echo " [2/7] Generando Seeder, Policy y UserResource..."
+if [ ! -f "$PROYECTO_DIR/database/seeders/ShieldSetupSeeder.php" ]; then
+    as_laravel php artisan make:seeder ShieldSetupSeeder --no-interaction
+fi
+
+if [ ! -f "$PROYECTO_DIR/app/Policies/UserPolicy.php" ]; then
+    as_laravel php artisan make:policy UserPolicy --model=User --no-interaction
+fi
+
+USER_RESOURCE="$PROYECTO_DIR/app/Filament/Resources/Users/UserResource.php"
+if [ ! -f "$USER_RESOURCE" ]; then
+    as_laravel php artisan make:filament-resource User --generate --view --no-interaction
+fi
+
+# ------------------------------------------------------------------------------
+# 3. MODELO, PANEL Y REGLAS GLOBALES
+# ------------------------------------------------------------------------------
+echo " [3/7] Configurando acceso al panel y plugin Shield..."
+cat > "$PATCH_SCRIPT" <<'PHP'
+<?php
+
+function failPatch(string $message): never
+{
+    fwrite(STDERR, $message . PHP_EOL);
+    exit(1);
+}
+
+function writeFile(string $path, string $contents): void
+{
+    if (file_put_contents($path, $contents) === false) {
+        failPatch("No se pudo escribir {$path}");
+    }
+}
+
+$userModel = __DIR__ . '/app/Models/User.php';
+$source = file_get_contents($userModel);
+if ($source === false) {
+    failPatch('No se pudo leer app/Models/User.php');
+}
+
+if (! str_contains($source, 'Spatie\\Permission\\Traits\\HasRoles')) {
+    $source = preg_replace(
+        '/(namespace App\\\\Models;\s*)/',
+        "$1\nuse Spatie\\Permission\\Traits\\HasRoles;\n",
+        $source,
+        1,
+        $count,
+    );
+    if ($count !== 1 || $source === null) {
+        failPatch('No se pudo importar HasRoles en User.php');
+    }
+}
+
+// La importacion tambien contiene "HasRoles"; comprobar solo el cuerpo de clase.
+$classPosition = strpos($source, 'class User');
+if ($classPosition === false) {
+    failPatch('No se encontro class User en User.php');
+}
+$classBody = substr($source, $classPosition);
+if (! preg_match('/^\s*use [^;]*\bHasRoles;/m', $classBody)) {
+    if (str_contains($source, 'use HasFactory, Notifiable;')) {
+        $source = str_replace(
+            'use HasFactory, Notifiable;',
+            'use HasFactory, Notifiable, HasRoles;',
+            $source,
+        );
+    } else {
+        failPatch('No se pudo anadir HasRoles a los traits de User.php');
+    }
+}
+
+$accessMethod = <<<'METHOD'
+    public function canAccessPanel(\Filament\Panel $panel): bool
+    {
+        return $panel->getId() === 'admin'
+            && $this->hasAnyRole(['Admin', 'Consultor']);
+    }
+
+METHOD;
+
+if (str_contains($source, 'canAccessPanel(')) {
+    $source = preg_replace(
+        '/\n    public function canAccessPanel\(.*?\n    \}\n/s',
+        "\n" . $accessMethod,
+        $source,
+        1,
+        $count,
+    );
+    if ($count !== 1 || $source === null) {
+        failPatch('No se pudo sustituir canAccessPanel en User.php');
+    }
+} else {
+    $position = strrpos($source, '}');
+    if ($position === false) {
+        failPatch('No se encontro el cierre de User.php');
+    }
+    $source = substr($source, 0, $position) . "\n" . $accessMethod . substr($source, $position);
+}
+writeFile($userModel, $source);
+
+$panelProvider = __DIR__ . '/app/Providers/Filament/AdminPanelProvider.php';
+$source = file_get_contents($panelProvider);
+if ($source === false) {
+    failPatch('No se pudo leer AdminPanelProvider.php');
+}
+
+if (! str_contains($source, 'BezhanSalleh\\FilamentShield\\FilamentShieldPlugin')) {
+    $source = preg_replace(
+        '/(namespace App\\\\Providers\\\\Filament;\s*)/',
+        "$1\nuse BezhanSalleh\\FilamentShield\\FilamentShieldPlugin;\n",
+        $source,
+        1,
+        $count,
+    );
+    if ($count !== 1 || $source === null) {
+        failPatch('No se pudo importar FilamentShieldPlugin');
+    }
+}
+
+if (! str_contains($source, 'FilamentShieldPlugin::make()')) {
+    $anchors = ['->login()', '->default()', 'return $panel'];
+    $inserted = false;
+    foreach ($anchors as $anchor) {
+        $position = strpos($source, $anchor);
+        if ($position === false) {
+            continue;
+        }
+
+        $at = $position + strlen($anchor);
+        $source = substr($source, 0, $at)
+            . "\n            ->plugin(FilamentShieldPlugin::make())"
+            . substr($source, $at);
+        $inserted = true;
+        break;
+    }
+    if (! $inserted) {
+        failPatch('No se encontro un ancla para registrar FilamentShieldPlugin');
+    }
+}
+writeFile($panelProvider, $source);
+
+$appProvider = __DIR__ . '/app/Providers/AppServiceProvider.php';
+$source = file_get_contents($appProvider);
+if ($source === false) {
+    failPatch('No se pudo leer AppServiceProvider.php');
+}
+
+$imports = [
+    'use App\\Models\\User;',
+    'use Illuminate\\Support\\Facades\\Gate;',
+    'use Spatie\\Permission\\Models\\Role;',
+];
+foreach ($imports as $import) {
+    if (! str_contains($source, $import)) {
+        $source = preg_replace('/(namespace App\\\\Providers;\s*)/', "$1\n{$import}\n", $source, 1, $count);
+        if ($count !== 1 || $source === null) {
+            failPatch("No se pudo importar {$import}");
+        }
+    }
+}
+
+$source = preg_replace('/\n        \/\/ LSETUP_SHIELD_RBAC_START.*?\/\/ LSETUP_SHIELD_RBAC_END\n/s', "\n", $source);
+$boot = strpos($source, 'public function boot');
+$brace = $boot === false ? false : strpos($source, '{', $boot);
+if ($brace === false) {
+    failPatch('No se encontro boot() en AppServiceProvider.php');
+}
+
+$rules = <<<'RULES'
+
+        // LSETUP_SHIELD_RBAC_START
+        Gate::before(function (User $user, string $ability, mixed ...$arguments): ?bool {
+            if ($user->hasRole('Admin')) {
+                return true;
+            }
+
+            if (! $user->hasRole('Consultor')) {
+                return false;
+            }
+
+            $subject = $arguments[0] ?? null;
+            if ($subject instanceof User || $subject === User::class
+                || $subject instanceof Role || $subject === Role::class) {
+                return false;
+            }
+
+            return in_array($ability, ['viewAny', 'view'], true);
+        });
+        // LSETUP_SHIELD_RBAC_END
+RULES;
+$at = $brace + 1;
+$source = substr($source, 0, $at) . $rules . substr($source, $at);
+writeFile($appProvider, $source);
+PHP
+chown "$LARAVEL_USER:$LARAVEL_USER" "$PATCH_SCRIPT"
+chmod 0600 "$PATCH_SCRIPT"
+as_laravel php "$PATCH_SCRIPT"
+
+# ------------------------------------------------------------------------------
+# 4. IMPLEMENTACION DE LOS ARTEFACTOS GENERADOS
+# ------------------------------------------------------------------------------
+echo " [4/7] Completando RBAC y gestion de usuarios..."
+cat > "$PROYECTO_DIR/database/seeders/ShieldSetupSeeder.php" <<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+use Spatie\Permission\Models\Permission;
+use Spatie\Permission\Models\Role;
+
+class ShieldSetupSeeder extends Seeder
+{
+    public function run(): void
+    {
+        app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
+
+        $admin = Role::findOrCreate('Admin', 'web');
+        $consultor = Role::findOrCreate('Consultor', 'web');
+        $permissions = Permission::query()->where('guard_name', 'web')->get();
+
+        $admin->syncPermissions($permissions);
+
+        $lectura = $permissions->filter(function (Permission $permission): bool {
+            $name = $permission->name;
+            $esLectura = str_starts_with($name, 'ViewAny:') || str_starts_with($name, 'View:');
+            $esSensible = str_ends_with($name, ':User') || str_ends_with($name, ':Role');
+
+            return $esLectura && ! $esSensible;
+        });
+
+        $consultor->syncPermissions($lectura);
+        app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
+    }
+}
+PHP
+
+cat > "$PROYECTO_DIR/app/Policies/UserPolicy.php" <<'PHP'
+<?php
+
+namespace App\Policies;
+
+use App\Models\User;
+
+class UserPolicy
+{
+    public function viewAny(User $user): bool
+    {
+        return $user->hasRole('Admin');
+    }
+
+    public function view(User $user, User $model): bool
+    {
+        return $user->hasRole('Admin');
+    }
+
+    public function create(User $user): bool
+    {
+        return $user->hasRole('Admin');
+    }
+
+    public function update(User $user, User $model): bool
+    {
+        return $user->hasRole('Admin');
+    }
+
+    public function delete(User $user, User $model): bool
+    {
+        return $user->hasRole('Admin');
+    }
+
+    public function deleteAny(User $user): bool
+    {
+        return $user->hasRole('Admin');
+    }
+}
+PHP
+
+mkdir -p "$PROYECTO_DIR/app/Filament/Resources/Users/Pages"
+cat > "$USER_RESOURCE" <<'PHP'
+<?php
+
+namespace App\Filament\Resources\Users;
+
+use App\Filament\Resources\Users\Pages\CreateUser;
+use App\Filament\Resources\Users\Pages\EditUser;
+use App\Filament\Resources\Users\Pages\ListUsers;
+use App\Filament\Resources\Users\Pages\ViewUser;
+use App\Models\User;
+use Filament\Actions\BulkActionGroup;
+use Filament\Actions\DeleteAction;
+use Filament\Actions\DeleteBulkAction;
+use Filament\Actions\EditAction;
+use Filament\Actions\ViewAction;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TextInput;
+use Filament\Resources\Resource;
+use Filament\Schemas\Schema;
+use Filament\Tables;
+use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Hash;
+use Spatie\Permission\Models\Role;
+
+class UserResource extends Resource
+{
+    protected static ?string $model = User::class;
+
+    protected static ?string $navigationLabel = 'Usuarios';
+
+    protected static ?string $modelLabel = 'Usuario';
+
+    protected static ?string $pluralModelLabel = 'Usuarios';
+
+    public static function form(Schema $schema): Schema
+    {
+        return $schema->components([
+            TextInput::make('name')->label('Nombre')->required()->maxLength(255),
+            TextInput::make('email')->label('Correo')->email()->required()->maxLength(255)->unique(ignoreRecord: true),
+            TextInput::make('password')
+                ->label('Contrasena')
+                ->password()
+                ->required(fn (string $operation): bool => $operation === 'create')
+                ->dehydrated(fn (?string $state): bool => filled($state))
+                ->dehydrateStateUsing(fn (string $state): string => Hash::make($state)),
+            Select::make('roles')
+                ->label('Rol')
+                ->relationship(
+                    name: 'roles',
+                    titleAttribute: 'name',
+                    modifyQueryUsing: fn (Builder $query): Builder => $query->whereIn('name', ['Admin', 'Consultor']),
+                )
+                ->multiple()
+                ->maxItems(1)
+                ->preload()
+                ->searchable()
+                ->required(),
+        ]);
+    }
+
+    public static function table(Table $table): Table
+    {
+        return $table
+            ->columns([
+                Tables\Columns\TextColumn::make('name')->label('Nombre')->searchable()->sortable(),
+                Tables\Columns\TextColumn::make('email')->label('Correo')->searchable()->sortable(),
+                Tables\Columns\TextColumn::make('roles.name')->label('Rol')->badge(),
+            ])
+            ->recordActions([
+                ViewAction::make(),
+                EditAction::make(),
+                DeleteAction::make(),
+            ])
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    DeleteBulkAction::make(),
+                ]),
+            ]);
+    }
+
+    public static function getPages(): array
+    {
+        return [
+            'index' => ListUsers::route('/'),
+            'create' => CreateUser::route('/create'),
+            'view' => ViewUser::route('/{record}'),
+            'edit' => EditUser::route('/{record}/edit'),
+        ];
+    }
+
+    public static function canViewAny(): bool
+    {
+        return auth()->user()?->hasRole('Admin') ?? false;
+    }
+}
+PHP
+
+cat > "$PROYECTO_DIR/app/Filament/Resources/Users/Pages/ListUsers.php" <<'PHP'
+<?php
+
+namespace App\Filament\Resources\Users\Pages;
+
+use App\Filament\Resources\Users\UserResource;
+use Filament\Actions;
+use Filament\Resources\Pages\ListRecords;
+
+class ListUsers extends ListRecords
+{
+    protected static string $resource = UserResource::class;
+
+    protected function getHeaderActions(): array
+    {
+        return [Actions\CreateAction::make()];
+    }
+}
+PHP
+
+cat > "$PROYECTO_DIR/app/Filament/Resources/Users/Pages/CreateUser.php" <<'PHP'
+<?php
+
+namespace App\Filament\Resources\Users\Pages;
+
+use App\Filament\Resources\Users\UserResource;
+use Filament\Resources\Pages\CreateRecord;
+
+class CreateUser extends CreateRecord
+{
+    protected static string $resource = UserResource::class;
+}
+PHP
+
+cat > "$PROYECTO_DIR/app/Filament/Resources/Users/Pages/EditUser.php" <<'PHP'
+<?php
+
+namespace App\Filament\Resources\Users\Pages;
+
+use App\Filament\Resources\Users\UserResource;
+use Filament\Actions;
+use Filament\Resources\Pages\EditRecord;
+
+class EditUser extends EditRecord
+{
+    protected static string $resource = UserResource::class;
+
+    protected function getHeaderActions(): array
+    {
+        return [Actions\ViewAction::make(), Actions\DeleteAction::make()];
+    }
+}
+PHP
+
+cat > "$PROYECTO_DIR/app/Filament/Resources/Users/Pages/ViewUser.php" <<'PHP'
+<?php
+
+namespace App\Filament\Resources\Users\Pages;
+
+use App\Filament\Resources\Users\UserResource;
+use Filament\Actions;
+use Filament\Resources\Pages\ViewRecord;
+
+class ViewUser extends ViewRecord
+{
+    protected static string $resource = UserResource::class;
+
+    protected function getHeaderActions(): array
+    {
+        return [Actions\EditAction::make()];
+    }
+}
+PHP
+
+chown -R "$LARAVEL_USER:$LARAVEL_USER" \
+    "$PROYECTO_DIR/app/Models" \
+    "$PROYECTO_DIR/app/Policies" \
+    "$PROYECTO_DIR/app/Providers" \
+    "$PROYECTO_DIR/app/Filament" \
+    "$PROYECTO_DIR/database/seeders"
+
+# Shield genera los permisos de los recursos ya existentes, incluido UserResource.
+echo " [5/7] Generando permisos Shield y sembrando roles..."
+as_laravel env APP_ENV=production php artisan migrate --force
+as_laravel php artisan shield:generate --all --panel=admin --no-interaction --ignore-existing-policies
+as_laravel env APP_ENV=production php artisan db:seed --class=ShieldSetupSeeder --force
+
+# ------------------------------------------------------------------------------
+# 5. PROMOCION DEL ADMINISTRADOR CREADO POR PANEL BASE
+# ------------------------------------------------------------------------------
+echo " [6/7] Asignando el rol Admin al administrador inicial..."
+cat > "$ADMIN_SCRIPT" <<'PHP'
+<?php
+
+use Illuminate\Contracts\Console\Kernel;
+
+$app = require __DIR__ . '/bootstrap/app.php';
+$app->make(Kernel::class)->bootstrap();
+
+$email = (string) getenv('PANEL_ADMIN_EMAIL');
+$user = \App\Models\User::query()->where('email', $email)->first();
+if ($user === null) {
+    fwrite(STDERR, "No existe el administrador inicial: {$email}" . PHP_EOL);
+    exit(1);
+}
+
+$user->syncRoles(['Admin']);
+echo 'Admin: ' . $user->email . PHP_EOL;
+PHP
+chown "$LARAVEL_USER:$LARAVEL_USER" "$ADMIN_SCRIPT"
+chmod 0600 "$ADMIN_SCRIPT"
+as_laravel_with_admin_env php "$ADMIN_SCRIPT"
+
+echo " [7/7] Reconstruyendo cache y reiniciando Octane..."
+as_laravel php artisan optimize:clear
+as_laravel env APP_ENV=production php artisan config:cache
+as_laravel env APP_ENV=production php artisan route:cache
+as_laravel env APP_ENV=production php artisan view:cache
+
+systemctl reset-failed octane 2>/dev/null || true
+systemctl restart octane || systemctl start octane
+
+for attempt in 1 2 3 4 5 6 7 8; do
+    sleep 1
+    if ss -ltn 2>/dev/null | grep -q ':8000 '; then
+        PANEL_URL=$(awk -F= '/^APP_URL=/{gsub(/"/, "", $2); print $2; exit}' "$PROYECTO_DIR/.env")
+        PANEL_URL=${PANEL_URL:-http://localhost}
+        echo "========================================================================="
+        echo " FILAMENT SHIELD CONFIGURADO"
+        echo "========================================================================="
+        echo " Admin URL:  ${PANEL_URL}/admin"
+        echo " Admin:      $ADMIN_EMAIL"
+        echo " Roles:      Admin y Consultor"
+        echo "========================================================================="
+        exit 0
+    fi
+done
+
+echo "[ERROR] Octane no escucha en :8000 tras el reinicio."
+echo "Revisa: journalctl -u octane -n 80 --no-pager"
+exit 1
