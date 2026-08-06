@@ -107,7 +107,7 @@ A ejecutar tras `lsetup up` (requiere proyecto desplegado). Es la base obligator
 - Secciones: 1 Validación de proyecto / 2 Credenciales admin / 3 Filament 5 + provider + TrustProxies / 4 Restricción del panel base / 5 Usuario, migraciones, caché de producción y healthcheck de Octane.
 
 ### 6.2 `panel-shield.sh` — Shield + Spatie Permission
-Módulo de autorización para ejecutar después de `panel-install.sh`. Su siguiente refactor eliminará la reinstalación de Filament y hará que sustituya la restricción del administrador inicial por roles/permisos de Shield. **No** instala Spatie Media Library: el binario estático FrankenPHP no embebe `ext-zip`/`fileinfo` y rompe boot del worker.
+Módulo de autorización para ejecutar desde la raíz Laravel después de `panel-install.sh`: `sudo ./panel-shield.sh`. No pide ni crea usuarios. Recupera `PANEL_ADMIN_EMAIL` creado por el panel base y sincroniza ese usuario con el rol `Admin`; instala Shield y Spatie Permission sin reinstalar Filament, genera el seeder, la policy y el `UserResource` mediante Artisan/Filament, y habilita el rol `Consultor` de solo lectura. **No** instala Spatie Media Library ni Debugbar.
 
 ### 6.3 `views/login.sh` (~20 KB, 11 secciones) — **WIP**: login Laravel + Google OAuth
 Automatización de vista de login. Añade login y Google OAuth a proyectos desplegados. Aplica `throttle:5,1` al `/login` y usa `set_env_var()` con `grep -v` + `printf` (no `sed`) para prevenir inyecciones desde secretos Google. 11 secciones numeradas. En desarrollo.

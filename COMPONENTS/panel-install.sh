@@ -183,16 +183,18 @@ if ($source === false) {
 $original = $source;
 $source = str_replace("trustProxies(at: '*')", "trustProxies(at: ['127.0.0.1'])", $source);
 if (! str_contains($source, 'trustProxies')) {
-    $anchor = '->withMiddleware(function (Middleware $middleware) {';
-    $position = strpos($source, $anchor);
-    if ($position === false) {
-        failPatch('No se encontro withMiddleware en bootstrap/app.php');
+    // Laravel 13 puede declarar el callback como `): void {`; no depender de
+    // una firma exacta evita abortar tras instalar Filament y antes del restart.
+    $source = preg_replace(
+        '/(->withMiddleware\(function\s*\(\s*Middleware\s+\$middleware\s*\)(?:\s*:\s*[^\{]+)?\s*\{)/',
+        "$1\n        \\$middleware->trustProxies(at: ['127.0.0.1']);",
+        $source,
+        1,
+        $count,
+    );
+    if ($count !== 1 || $source === null) {
+        failPatch('No se encontro un callback withMiddleware compatible en bootstrap/app.php');
     }
-
-    $at = $position + strlen($anchor);
-    $source = substr($source, 0, $at)
-        . "\n        \$middleware->trustProxies(at: ['127.0.0.1']);"
-        . substr($source, $at);
 }
 
 if ($source !== $original) {
@@ -354,6 +356,15 @@ systemctl restart octane || systemctl start octane
 for attempt in 1 2 3 4 5 6 7 8; do
     sleep 1
     if ss -ltn 2>/dev/null | grep -q ':8000 '; then
+        # El puerto abierto no garantiza que el worker haya cargado las rutas
+        # nuevas. Filament redirige /admin a /admin/login para invitados.
+        PANEL_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+            http://127.0.0.1:8000/admin 2>/dev/null || true)
+        if [ "$PANEL_STATUS" != "200" ] && [ "$PANEL_STATUS" != "302" ] && [ "$PANEL_STATUS" != "303" ]; then
+            echo "[ERROR] Octane escucha en :8000 pero /admin responde HTTP ${PANEL_STATUS:-sin respuesta}."
+            echo "Revisa: journalctl -u octane -n 80 --no-pager"
+            exit 1
+        fi
         PANEL_URL=$(awk -F= '/^APP_URL=/{gsub(/"/,"",$2); print $2; exit}' "$PROYECTO_DIR/.env")
         PANEL_URL=${PANEL_URL:-http://localhost}
         echo "========================================================================="
