@@ -16,31 +16,31 @@ import (
 // las claves de la sección correspondiente como env vars (UPPERCASE) — los
 // scripts parcheados, si la var ya existe, omiten el prompt interactivo.
 
-//go:embed secure.sh
+//go:embed SH/secure.sh
 var shSecure []byte
 
-//go:embed waf.sh
+//go:embed SH/waf.sh
 var shWaf []byte
 
-//go:embed harden.sh
+//go:embed SH/harden.sh
 var shHarden []byte
 
-//go:embed dominio.sh
+//go:embed SH/dominio.sh
 var shDominio []byte
 
-//go:embed backup-install.sh
+//go:embed SH/backup-install.sh
 var shBackupInstall []byte
 
-//go:embed backup.sh
+//go:embed SH/backup.sh
 var shBackup []byte
 
-//go:embed backup-verify.sh
+//go:embed SH/backup-verify.sh
 var shBackupVerify []byte
 
-//go:embed restore.sh
+//go:embed SH/restore.sh
 var shRestore []byte
 
-//go:embed 2fa.sh
+//go:embed SH/2fa.sh
 var sh2fa []byte
 
 // ===== Helpers comunes =====

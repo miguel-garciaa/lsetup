@@ -210,14 +210,14 @@ func (a *App) s4_user_laravel() {
 }
 
 // ============================================================
-// Sección 5: PHP 8.4 + Composer
+// Sección 5: PHP 8.5 + Composer
 // Equivalente a setup.sh:279-294.
 // ============================================================
 func (a *App) s5_php_composer() {
-	a.header("5. PHP 8.4 + COMPOSER")
+	a.header("5. PHP 8.5 + COMPOSER")
 
 	a.runIgnore("sudo", "dnf", "module", "reset", "php", "-y")
-	a.runIgnore("sudo", "dnf", "module", "enable", "php:remi-8.4", "-y")
+	a.runIgnore("sudo", "dnf", "module", "enable", "php:remi-8.5", "-y")
 
 	phpPkgs := []string{
 		"php", "php-cli", "php-fpm", "php-pgsql", "php-zip", "php-xml",

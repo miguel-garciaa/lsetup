@@ -10,10 +10,10 @@ import (
 )
 
 // statusSh es el script bash embebido en compilación.
-// go:embed incrusta status.sh (repo root) como []byte en el binario.
+// go:embed incrusta SH/status.sh como []byte en el binario.
 // Así el binario Go se despliega standalone, sin llevar status.sh aparte.
 //
-//go:embed status.sh
+//go:embed SH/status.sh
 var statusSh []byte
 
 // cmdStatus implementa: ./lsetup status [--install]

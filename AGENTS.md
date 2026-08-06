@@ -4,16 +4,17 @@
 
 - **Objetivo:** Binario Go `lsetup` que aprovisiona y bastiona un servidor **AlmaLinux 10.x / RHEL 10** con stack Laravel, y orquesta todos los scripts Bash embebidos.
 - **Stack:** Laravel 13, **PHP 8.5** (Remi), PostgreSQL 18, Redis 8, Filament 5, Octane (FrankenPHP binario estático), Nginx, systemd, SELinux, firewalld.
-- **Flujo de trabajo:** El repo se edita en Windows. El binario `lsetup` se compila y **se ejecuta en el servidor** como root. Los scripts Bash de `SH/` se embeben en el binario Go vía `//go:embed` (no se copian sueltos al servidor). Subida de clave pública previa: ver `SSH/ssh.txt`.
-- **Validación:** Sin tests/CI. Verificar con `go build ./...` (en `GO/`) y `bash -n <script>.sh` antes de dar por bueno un cambio.
+- **Flujo de trabajo:** El repo se edita en Windows. El binario `lsetup` se compila y **se ejecuta en el servidor** como root. Los scripts Bash fuente viven en `SH/`; la copia embebible vive en `GO/SH/` porque `//go:embed` no puede leer fuera del directorio del paquete Go. Subida de clave pública previa: ver `SSH/ssh.txt`.
+- **Skills del repo:** Antes de tocar codigo, scripts, hardening o DB/Redis, cargar las skills locales relevantes en `AGENTS/skills/` (`golang`, `bash-scripting`, `seguridad-vps`, `postgres-redis`, y las que apliquen al cambio). Si una skill local no se puede leer, indicarlo y seguir con la mejor alternativa.
+- **Validación:** Sin tests/CI. Verificar con `go build ./...` (en `GO/`) y `bash -n GO/SH/<script>.sh` antes de dar por bueno un cambio.
 - **Componentes post-deploy:** Tras `lsetup up` exitoso el proyecto Laravel queda desplegado y sirviendo, pero la página está vacía. `COMPONENTS/` contiene scripts Bash independientes para automatizar el desarrollo web (login, Google Ads, panel Filament). No forman parte del pipeline `up`.
 
 ## 2. Arquitectura: binario Go `GO/`
 
 - **`main.go`** — Dispatcher de subcomandos: `init | up | debug <cmd> | 2fa --on/--off | status | backup | backup-verify | restore`. Soporta alias por basename (si el binario se copia a `/usr/local/bin/status`, `/usr/local/bin/backup`, etc. tras `lsetup up` exitoso, responde a ese nombre sin prefijo).
 - **`sections.go`** — Reescritura **nativa Go** de `setup.sh` (no lanza bash). Funciones `s1_repos` … `s11_arranque` ejecutan `dnf`, `systemctl`, `psql`, `composer`, `php artisan` directamente vía `os/exec`. `runSetup()` orquesta s1..s11.
-- **`sections_subcmd.go`** — Implementa `cmdUp` (pipeline) y embebe los demás `SH/*.sh` con `//go:embed` (`shSecure`, `shWaf`, `shHarden`, `shDominio`, `shBackupInstall`, `shBackup`, `shBackupVerify`, `shRestore`, `sh2fa`). `runEmbedded()` escribe el script a un tmpfile (strip CRLF→LF) y lo ejecuta con `bash` preservando stdin/stdout/stderr (interactividad).
-- **`sections_status.go`** — `cmdStatus` embebe `status.sh` vía `//go:embed statusSh` y lo corre con `bash -s` (stdin). Flag `--install` despliega alias a `/usr/local/bin/status`.
+- **`sections_subcmd.go`** — Implementa `cmdUp` (pipeline) y embebe `GO/SH/*.sh` con `//go:embed` (`shSecure`, `shWaf`, `shHarden`, `shDominio`, `shBackupInstall`, `shBackup`, `shBackupVerify`, `shRestore`, `sh2fa`). `runEmbedded()` escribe el script a un tmpfile (strip CRLF→LF) y lo ejecuta con `bash` preservando stdin/stdout/stderr (interactividad).
+- **`sections_status.go`** — `cmdStatus` embebe `GO/SH/status.sh` vía `//go:embed statusSh` y lo corre con `bash -s` (stdin). Flag `--install` despliega alias a `/usr/local/bin/status`.
 - **`runner.go`** — Helpers de ejecución: `runStrict`/`runIgnore`/`runCmdPassthrough` (streams live), `asLaravel`/`asLaravelStrict` (sudo -u laravel con `HOME`/`COMPOSER_HOME` correctos), `runParallel` (setsebool/semanage en goroutines), `syncClockHTTP` (workaround VBox/PGDG).
 - **`config.go`** — Parser INI multi-sección genérico. Soporta `key=val`, `#` comentarios, e inline heredoc `key<<DELIM` (para PEM multi-línea como `cloudflare_cert`). API: `loadConfig`, `Section`, `SectionExists`, `RemoveSection`, `save`, `exportEnv`, `fillInteractive`.
 - **`templates.go`** — Plantillas: `tplLsetupConf` (config INI con `__REDIS_PASS__` placeholder), `tplEnv` (Laravel .env), `tplOctaneService` (systemd), `tplNginxConf`, `tplLaravelVhost` (proxy a Octane 127.0.0.1:8000), `tplLimitsAppend`, `tplSysctlAppend`, `tplRedisAppend`.
@@ -51,8 +52,8 @@ Tras pipeline completo y exitoso: despliega aliases `status`/`backup`/`backup-ve
 Todos embebidos en el binario Go vía `//go:embed` y ejecutados con `bash` vía `runEmbedded` (preserva interactividad). Se editan en el repo Windows; tras rebuild del binario, se reempaquetan.
 
 ### 5.1 `setup.sh` (552 líneas) — Instalador base
-Cabecera: "INSTALADOR LARAVEL 13 + PHP 8.4 + PostgreSQL 18 + Redis 8 + Filament 5". **No** instala Filament ni crea admin. Tuning dinámico de recursos derivado de `CPU_CORES`/`RAM_MB` (`nproc`/`MemTotal`). Nota: `sections.go` es la reescritura nativa Go de este script; si se edita aquí, actualizar también `sections.go`.
-- Secciones: 1 Preparación sistemas+repos / 2 Firewall / 3 PostgreSQL 18 / 4 Usuario laravel (no-root) / 5 PHP 8.4 + Composer / 6 Redis (phpredis) / 7 Creación proyecto Laravel 13 / 8 Generación .env / 9 Octane+FrankenPHP+systemd / 10 Nginx+SELinux+permisos / 11 Arranque final.
+Cabecera: "INSTALADOR LARAVEL 13 + PHP 8.5 + PostgreSQL 18 + Redis 8 + Filament 5". **No** instala Filament ni crea admin. Tuning dinámico de recursos derivado de `CPU_CORES`/`RAM_MB` (`nproc`/`MemTotal`). Nota: `sections.go` es la reescritura nativa Go de este script; si se edita aquí, actualizar también `sections.go`.
+- Secciones: 1 Preparación sistemas+repos / 2 Firewall / 3 PostgreSQL 18 / 4 Usuario laravel (no-root) / 5 PHP 8.5 + Composer / 6 Redis (phpredis) / 7 Creación proyecto Laravel 13 / 8 Generación .env / 9 Octane+FrankenPHP+systemd / 10 Nginx+SELinux+permisos / 11 Arranque final.
 
 ### 5.2 `dominio.sh` (275 líneas) — Dominio + Cloudflare
 Requiere root estricto (sin `sudo`) por redireccionamientos a `/etc/ssl`. Configura certificado Origin Cloudflare y vhost Nginx 443 con HSTS y `ssl_session_cache`.
@@ -132,7 +133,7 @@ Pre-requisito de `secure.sh`: sin clave pública en `authorized_keys` antes de r
 - **Integridad de variables:** No modificar config productiva (`APP_ENV=production` forzado por Octane frente al `.env`). Validar DB con regex estricto (`identPG`) y escapar `'` → `''` en contraseñas SQL.
 - **Sistema base (RHEL 10):** Sintaxis `dnf` / `systemctl` / `firewalld` / `restorecon` / `semanage`. Prohibido `apt`/Debian.
 - **Hardening restricto:** Prohibido `chmod 777`, prohibido `PasswordAuthentication yes`, prohibido root innecesariamente.
-- **Edición scripts embebidos:** Tras editar cualquier `SH/*.sh` referenciado por `//go:embed` en `sections_subcmd.go` o `sections_status.go`, **recompilar** el binario Go (`cd GO && go build`) para que el embed se reempaquete.
+- **Edición scripts embebidos:** Tras editar cualquier `SH/*.sh`, sincronizar la copia `GO/SH/*.sh` correspondiente y **recompilar** el binario Go (`cd GO && go build`) para que el embed se reempaquete.
 
 ## 9. Helper `maybe_reboot` (`secure.sh`)
 
