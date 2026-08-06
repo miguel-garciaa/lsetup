@@ -6,7 +6,7 @@
 - **Stack:** Laravel 13, **PHP 8.5** (Remi), PostgreSQL 18, Redis 8, Filament 5, Octane (FrankenPHP binario estático), Nginx, systemd, SELinux, firewalld.
 - **Flujo de trabajo:** El repo se edita en Windows. El binario `lsetup` se compila y **se ejecuta en el servidor** como root. Los scripts Bash fuente viven en `SH/`; la copia embebible vive en `GO/SH/` porque `//go:embed` no puede leer fuera del directorio del paquete Go. Subida de clave pública previa: ver `SSH/ssh.txt`.
 - **Skills del repo:** Antes de tocar codigo, scripts, hardening o DB/Redis, cargar las skills locales relevantes en `AGENTS/skills/` (`golang`, `bash-scripting`, `seguridad-vps`, `postgres-redis`, y las que apliquen al cambio). Si una skill local no se puede leer, indicarlo y seguir con la mejor alternativa.
-- **Validación:** Sin tests/CI. Verificar con `go build ./...` (en `GO/`) y `bash -n GO/SH/<script>.sh` antes de dar por bueno un cambio.
+- **Validación:** Sin tests/CI. En Windows, verificar Go con `go test ./...` (en `GO/`) sin generar `lsetup.exe`, y scripts con `bash -n GO/SH/<script>.sh`. El binario de distribución se compila en AlmaLinux con `cd GO && go build -o lsetup`.
 - **Componentes post-deploy:** Tras `lsetup up` exitoso el proyecto Laravel queda desplegado y sirviendo, pero la página está vacía. `COMPONENTS/` contiene scripts Bash independientes para automatizar el desarrollo web (login, Google Ads, panel Filament). No forman parte del pipeline `up`.
 
 ## 2. Arquitectura: binario Go `GO/`
@@ -102,13 +102,12 @@ Cron dom 04:30. `set -uo pipefail` (NO `-e`: reporta todos los fallos, no aborta
 
 Tras `lsetup up` exitoso, el proyecto Laravel está desplegado y sirviendo pero la página está vacía. Estos scripts Bash **independientes** (no en pipeline `up`) automatizan features web. Se invocan manualmente vía `bash script.sh` desde el directorio del proyecto Laravel.
 
-### 6.1 `panel-vacio.sh` (322 líneas) — Filament 5 base limpio
-A ejecutar tras `setup.sh` (requiere proyecto desplegado). **No** instala Shield, **no** Spatie Media Library, **no** roles/permisos. El admin se crea sin rol — el operador decide autorización del panel manualmente (`canAccessPanel`, middleware).
-- Secciones: 1 Detección ruta proyecto / 2 Credenciales admin / 3 Diagnóstico pre-Filament (¿Octane bootea?) / 4 Filament 5 / 4.5 Trust proxies (Octane detrás Nginx HTTPS) / 5 Usuario admin panel (sin roles) / 8 Debugbar (solo dev) / 9 Migraciones + storage link + cache / 10 Reiniciar Octane robusto / 11 Banner final.
+### 6.1 `panel-install.sh` — Filament 5 base limpio
+A ejecutar tras `lsetup up` (requiere proyecto desplegado). Es la base obligatoria para los módulos posteriores. Instala Filament 5, configura login, proxies HTTPS para Octane/Nginx y crea o actualiza un único administrador. **No** instala Shield, Spatie Media Library, roles/permisos, Debugbar ni funcionalidad de negocio. Hasta que se instale Shield, `canAccessPanel` solo autoriza el correo `PANEL_ADMIN_EMAIL` configurado por el script.
+- Secciones: 1 Validación de proyecto / 2 Credenciales admin / 3 Filament 5 + provider + TrustProxies / 4 Restricción del panel base / 5 Usuario, migraciones, caché de producción y healthcheck de Octane.
 
-### 6.2 `panel-shield.sh` (405 líneas) — Filament 5 + Shield + Spatie Permission
-Variante con autorización completa. **No** instala Spatie Media Library: el binario estático FrankenPHP no embebe `ext-zip`/`fileinfo` y rompe boot del worker. Re-añadir tras rebuild binario.
-- Secciones: 1 Detección ruta proyecto / 2 Credenciales admin / 3 Diagnóstico pre-Filament / 4 Filament 5 / 4.5 Trust proxies / 5 Filament Shield + Spatie Permission / 6 Trait `HasRoles` en `User` / 7 Usuario admin panel / 8 Debugbar (solo dev) / 9 Migraciones + storage link + cache / 10 Reiniciar Octane robusto / 11 Banner final.
+### 6.2 `panel-shield.sh` — Shield + Spatie Permission
+Módulo de autorización para ejecutar después de `panel-install.sh`. Su siguiente refactor eliminará la reinstalación de Filament y hará que sustituya la restricción del administrador inicial por roles/permisos de Shield. **No** instala Spatie Media Library: el binario estático FrankenPHP no embebe `ext-zip`/`fileinfo` y rompe boot del worker.
 
 ### 6.3 `views/login.sh` (~20 KB, 11 secciones) — **WIP**: login Laravel + Google OAuth
 Automatización de vista de login. Añade login y Google OAuth a proyectos desplegados. Aplica `throttle:5,1` al `/login` y usa `set_env_var()` con `grep -v` + `printf` (no `sed`) para prevenir inyecciones desde secretos Google. 11 secciones numeradas. En desarrollo.
@@ -133,7 +132,7 @@ Pre-requisito de `secure.sh`: sin clave pública en `authorized_keys` antes de r
 - **Integridad de variables:** No modificar config productiva (`APP_ENV=production` forzado por Octane frente al `.env`). Validar DB con regex estricto (`identPG`) y escapar `'` → `''` en contraseñas SQL.
 - **Sistema base (RHEL 10):** Sintaxis `dnf` / `systemctl` / `firewalld` / `restorecon` / `semanage`. Prohibido `apt`/Debian.
 - **Hardening restricto:** Prohibido `chmod 777`, prohibido `PasswordAuthentication yes`, prohibido root innecesariamente.
-- **Edición scripts embebidos:** Tras editar cualquier `SH/*.sh`, sincronizar la copia `GO/SH/*.sh` correspondiente y **recompilar** el binario Go (`cd GO && go build`) para que el embed se reempaquete.
+- **Edición scripts embebidos:** Tras editar cualquier `SH/*.sh`, sincronizar la copia `GO/SH/*.sh` correspondiente y, al preparar el servidor AlmaLinux, **recompilar** el binario Go (`cd GO && go build -o lsetup`) para que el embed se reempaquete.
 
 ## 9. Helper `maybe_reboot` (`secure.sh`)
 
