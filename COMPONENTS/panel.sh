@@ -2,14 +2,15 @@
 set -e
 
 # ==============================================================================
-# FILAMENT 5 + SHIELD + USUARIO ADMIN
+# FILAMENT 5 + USUARIO ADMIN (PANEL LIMPIO)
 # A ejecutar DESPUÉS de setup.sh (requiere proyecto Laravel ya desplegado).
-# No instala Spatie Media Library: el binario static FrankenPHP no embede
-# ext-zip/fileinfo y rompe el boot del worker. Re-añadir tras rebuild binario.
+# Panel base desnudo: NO instala Shield, NO instala Spatie Media Library, NO
+# configura roles/permisos. El admin se crea sin rol — el usuario decide cómo
+# gestionar autorización del panel manualmente.
 # ==============================================================================
 
 echo "=========================================================================="
-echo "    FILAMENT 5 + SHIELD + ADMIN    "
+echo "    FILAMENT 5 + ADMIN (PANEL LIMPIO)    "
 echo "=========================================================================="
 
 # ------------------------------------------------------------------------------
@@ -104,7 +105,7 @@ diagnosticar_octane || {
 # ------------------------------------------------------------------------------
 # 4. FILAMENT 5
 # ------------------------------------------------------------------------------
-echo " [1/6] Instalando Filament 5..."
+echo " [1/4] Instalando Filament 5..."
 as_laravel "composer require filament/filament:\"^5.0\" -W --no-interaction"
 as_laravel "composer dump-autoload -o"
 as_laravel "php artisan filament:install --panels --no-interaction"
@@ -225,116 +226,32 @@ exit(\$changed ? 0 : 0);
 PHP"
 as_laravel "php patch_trust.php && rm -f patch_trust.php"
 # Forzar re-cache de config tras tocar bootstrap/app.php + providers (se hace en
-# paso 9 de todas formas, pero aqui aseguramos chown por si acaso).
+# el paso [4/4] de todas formas, pero aqui aseguramos chown por si acaso).
 sudo chown -R "$LARAVEL_USER":"$LARAVEL_USER" "$PROYECTO_DIR/bootstrap" "$PROYECTO_DIR/app/Providers" 2>/dev/null || true
 
 # ------------------------------------------------------------------------------
-# 5. FILAMENT SHIELD + SPATIE PERMISSION
+# 5. USUARIO ADMIN DEL PANEL (sin roles — panel limpio)
+# Sin Shield, el admin se crea como User normal. La autorización del panel
+# (canAccessPanel, middleware de Filament) queda a decisión del operador.
+# updateOrCreate: re-ejecutar panel.sh actualiza name/pass (intencional) sin
+# duplicar. Vars via env(): el --execute va entre single-quotes y $VAR NO se
+# expande ahi; export previo + env("VAR") en PHP es el patron seguro del repo
+# (mismo de login.sh para evitar inyeccion desde secrets).
 # ------------------------------------------------------------------------------
-echo " [2/6] Instalando Filament Shield..."
-as_laravel "composer require bezhansalleh/filament-shield --no-interaction"
-# dump-autoload -o: sin ello el autoload map no registra las migraciones de
-# Spatie laravel-permission (auto-descubiertas vía loadMigrationsFrom) y
-# `php artisan migrate` no las ve -> tablas permissions/roles NO se crean ->
-# shield:generate peta con PDO "relation permissions does not exist".
-as_laravel "composer dump-autoload -o"
-# shield:install requiere el id del panel ('admin') en modo --no-interaction:
-# sin él lanza NonInteractiveValidationException.
-as_laravel "php artisan shield:install admin --no-interaction"
-# spatie/laravel-permission: publicar migraciones (idempotente) y migrar ANTES
-# de generate. --force para no interactivo.
-as_laravel "php artisan vendor:publish --provider=\"Spatie\Permission\PermissionServiceProvider\" --tag=\"permission-migrations\" --force" || true
-as_laravel "APP_ENV=production php artisan migrate --force"
-# Migraciones de Spatie laravel-permission: aunque dump-autoload precedente
-# deberia permitir su auto-descubrimiento, en algunos setups no se registran
-# y `migrate --force` las salta -> shield:generate peta con PDO "relation
-# permissions does not exist" -> set -e aborta antes de crear admin -> /admin 403.
-# --path explicito es idempotente: si ya corrieron via generic migrate, son
-# no-op (registradas en `migrations` table); si no, se crean ahora.
-as_laravel "APP_ENV=production php artisan migrate --path=vendor/spatie/laravel-permission/database/migrations --force" || true
-# shield:generate con || true: si falla (permisos a medias de run previa, etc),
-# no aborta el script — el admin se crea igual con syncRoles super_admin (bypass
-# Shield a nivel panel access) y el warning deja rastro para depuracion.
-as_laravel "php artisan shield:generate --all --panel=admin --no-interaction" || \
-  echo "  AVISO: shield:generate falló (ver log). super_admin role sigue valiendo para panel access."
-
-# ------------------------------------------------------------------------------
-# 6. TRAIT HasRoles EN User (obligatorio para assignRole de spatie)
-# ------------------------------------------------------------------------------
-echo " [3/6] Parcheando User.php con HasRoles y FilamentUser..."
-sudo -u "$LARAVEL_USER" bash -c "cat > '$PROYECTO_DIR/patch_user.php' << 'PHP'
-<?php
-\$f = __DIR__ . '/app/Models/User.php';
-\$c = file_get_contents(\$f);
-\$changed = false;
-
-if (strpos(\$c, 'HasRoles') === false) {
-  \$c = str_replace(
-      'use Illuminate\\\\Notifications\\\\Notifiable;',
-      \"use Illuminate\\\\Notifications\\\\Notifiable;\nuse Spatie\\\\Permission\\\\Traits\\\\HasRoles;\",
-      \$c
-  );
-  \$c = str_replace(
-      'use HasFactory, Notifiable;',
-      'use HasFactory, Notifiable, HasRoles;',
-      \$c
-  );
-  \$changed = true;
-  echo \"User.php parcheado con HasRoles\n\";
-} else {
-  echo \"User.php ya tiene HasRoles\n\";
-}
-
-if (strpos(\$c, 'FilamentUser') === false) {
-  \$c = str_replace(
-      'class User extends Authenticatable',
-      'class User extends Authenticatable implements \\\\Filament\\\\Models\\\\Contracts\\\\FilamentUser',
-      \$c
-  );
-  \$c = str_replace(
-      'use HasFactory, Notifiable, HasRoles;',
-      'use HasFactory, Notifiable, HasRoles, \\\\BezhanSalleh\\\\FilamentShield\\\\Traits\\\\HasPanelShield;',
-      \$c
-  );
-  \$changed = true;
-  echo \"User.php parcheado con FilamentUser y HasPanelShield\n\";
-} else {
-  echo \"User.php ya implementa FilamentUser\n\";
-}
-
-if (\$changed) {
-  file_put_contents(\$f, \$c);
-}
-PHP"
-as_laravel "php patch_user.php && rm -f patch_user.php"
-
-# ------------------------------------------------------------------------------
-# 7. USUARIO ADMIN DEL PANEL
-# syncRoles (no assignRole): idempotente — si ya tenía el rol no duplica, y
-# si el rol falto por un shield:install roto lo (re)asigna. updateOrCreate para
-# que re-ejecutar panel.sh actualice name/pass (intencional) sin duplicar.
-# firstOrCreate del Role super_admin cubre el caso de shield:install abortado.
-# Vars via env() como el original: el --execute va entre single-quotes y $VAR
-# NO se expande ahi; export previo + env("VAR") en PHP es el patron seguro del
-# repo (mismo de login.sh para evitar inyeccion desde secrets).
-# ------------------------------------------------------------------------------
-echo " [4/6] Creando/actualizando usuario admin..."
+echo " [2/4] Creando/actualizando usuario admin..."
 as_laravel "export ADMIN_NAME='$ADMIN_NAME' ADMIN_EMAIL='$ADMIN_EMAIL' ADMIN_PASS='$ADMIN_PASS'; \
   php artisan tinker --execute='
-use Spatie\Permission\Models\Role;
-Role::firstOrCreate([\"name\" => \"super_admin\", \"guard_name\" => \"web\"]);
 \$u = \App\Models\User::updateOrCreate(
   [\"email\" => env(\"ADMIN_EMAIL\")],
   [\"name\" => env(\"ADMIN_NAME\"), \"password\" => bcrypt(env(\"ADMIN_PASS\"))]
 );
-\$u->syncRoles([\"super_admin\"]);
-echo \"Admin: \" . \$u->email . \" | roles: \" . \$u->roles->pluck(\"name\")->implode(\",\") . PHP_EOL;
+echo \"Admin: \" . \$u->email . PHP_EOL;
 '"
 
 # ------------------------------------------------------------------------------
 # 8. DEBUGBAR (solo dev)
 # ------------------------------------------------------------------------------
-echo " [5/6] Instalando Debugbar (dev)..."
+echo " [3/4] Instalando Debugbar (dev)..."
 as_laravel "composer require barryvdh/laravel-debugbar --dev --no-interaction"
 
 # ------------------------------------------------------------------------------
@@ -343,7 +260,7 @@ as_laravel "composer require barryvdh/laravel-debugbar --dev --no-interaction"
 # (Environment=APP_ENV=production). Cachear bajo local congela config divergente
 # y rompe el boot del worker.
 # ------------------------------------------------------------------------------
-echo " [6/6] Migrando, storage:link y cacheando (APP_ENV=production)..."
+echo " [4/4] Migrando, storage:link y cacheando (APP_ENV=production)..."
 as_laravel "php artisan storage:link --force || true"
 as_laravel "APP_ENV=production php artisan migrate --force"
 as_laravel "php artisan optimize:clear"
@@ -401,5 +318,5 @@ echo " FILAMENT 5 CONFIGURADO"
 echo "=========================================================================="
 echo " Admin URL:  ${PANEL_URL}/admin"
 echo " Login:      $ADMIN_EMAIL  (contraseña: la introducida arriba)"
-echo " Panel:      Filament 5 + Shield"
+echo " Panel:      Filament 5 (panel limpio — sin Shield)"
 echo "=========================================================================="

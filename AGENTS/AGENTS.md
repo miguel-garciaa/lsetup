@@ -26,7 +26,7 @@ Aquí tienes el documento `AGENTS.md` reestructurado y optimizado:
 
 2. **`panel.sh` (Panel de Administración):** Se ejecuta tras el setup.
 
-* Instala Filament 5, Shield y Spatie Media Library.
+* Instala Filament 5 como panel base limpio (sin Shield, sin Spatie Media Library, sin roles/permisos). El operador decide manualmente la autorización (`canAccessPanel`, middleware).
 
 * Crea el usuario administrador interactivo y parchea `AdminPanelProvider.php` con `->login()` mediante heredoc PHP (sin usar `sed`) para evitar errores `RouteNotFoundException`.
 
