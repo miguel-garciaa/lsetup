@@ -181,13 +181,14 @@ if ($source === false) {
 }
 
 $original = $source;
+$source = str_replace('\\->trustProxies', '$middleware->trustProxies', $source);
 $source = str_replace("trustProxies(at: '*')", "trustProxies(at: ['127.0.0.1'])", $source);
 if (! str_contains($source, 'trustProxies')) {
     // Laravel 13 puede declarar el callback como `): void {`; no depender de
     // una firma exacta evita abortar tras instalar Filament y antes del restart.
     $source = preg_replace(
         '/(->withMiddleware\(function\s*\(\s*Middleware\s+\$middleware\s*\)(?:\s*:\s*[^\{]+)?\s*\{)/',
-        "$1\n        \\$middleware->trustProxies(at: ['127.0.0.1']);",
+        "$1\n        \$middleware->trustProxies(at: ['127.0.0.1']);",
         $source,
         1,
         $count,
