@@ -25,7 +25,11 @@ cd "$PROYECTO_DIR"
 
 # Composer/artisan NUNCA como root: mismo patrón que setup.sh (as_laravel).
 LARAVEL_USER="laravel"
-LARAVEL_HOME="/var/lib/laravel"
+LARAVEL_HOME="$(getent passwd "$LARAVEL_USER" | cut -d: -f6)"
+if [ -z "$LARAVEL_HOME" ] || [ ! -d "$LARAVEL_HOME" ]; then
+  echo "[ERROR] No se encontro un HOME valido para el usuario $LARAVEL_USER."
+  exit 1
+fi
 as_laravel() {
   sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" bash -lc "cd '$PROYECTO_DIR' && $*"
 }

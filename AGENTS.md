@@ -93,7 +93,7 @@ No conectarlos a `lsetup.sh` hasta que el usuario pida recuperar seguridad/backu
 - Usar `#!/bin/bash` y `set -e` por defecto.
 - Scripts que escriben en `/etc`, systemd, Nginx o firewall deben validar root con `EUID`.
 - En AlmaLinux/RHEL usar `dnf`, `systemctl`, `firewall-cmd`, `restorecon`, `semanage`. No usar `apt`.
-- Composer y Artisan deben ejecutarse como usuario `laravel`, con `HOME=/var/lib/laravel` y `COMPOSER_HOME=/var/lib/laravel/.composer`.
+- Composer y Artisan deben ejecutarse como usuario `laravel`, con `HOME=/home/laravel` y `COMPOSER_HOME=/home/laravel/.composer`.
 - Evitar `sed` para modificar PHP. Usar `php -r` o heredocs PHP.
 - Para `.env`, preferir `awk` o `grep -v` + `printf`.
 - No usar `chmod 777`.

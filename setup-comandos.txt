@@ -1,0 +1,283 @@
+COMANDOS MANUALES DEL SETUP - UBUNTU SERVER 26.04
+=================================================
+
+1. ACTUALIZAR SISTEMA Y PAQUETES BASE
+=====================================
+
+sudo apt update && sudo apt upgrade -y
+
+sudo apt install -y curl tar git htop nano
+
+2. FIREWALL UFW
+=================================================
+
+sudo apt install ufw
+
+sudo sed -i 's/IPV6=yes/IPV6=no/' /etc/default/ufw
+sudo ufw reset
+
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw allow 5432/tcp
+sudo ufw allow 6379/tcp
+
+sudo ufw enable
+sudo ufw status
+
+
+3. NODE.JS 24
+=============
+
+sudo apt install -y nodejs npm
+
+
+5. POSTGRESQL 18
+================
+
+sudo apt install -y postgresql-18 postgresql-client-18 
+
+sudo systemctl enable --now postgresql
+
+sudo -u postgres psql -c "CREATE USER laravel WITH PASSWORD 'laravel';"
+
+sudo -u postgres psql -c "CREATE DATABASE laravel OWNER laravel;"
+
+sudo -u postgres psql -c "ALTER USER laravel WITH PASSWORD 'laravel';"
+
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE laravel TO laravel;"
+
+
+sudo sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/g" /etc/postgresql/18/main/postgresql.conf
+sudo sed -i "s/listen_addresses = 'localhost'/listen_addresses = '*'/g" /etc/postgresql/18/main/postgresql.conf
+
+sudo sed -i '$ a\host    all             all             192.168.1.0\/24          scram-sha-256' /etc/postgresql/18/main/pg_hba.conf
+
+sudo systemctl restart postgresql
+
+
+6. PHP 8.5 Y EXTENSIONES
+========================
+
+sudo apt install -y php8.5 php8.5-cli php8.5-fpm php8.5-pgsql php8.5-zip php8.5-xml php8.5-curl php8.5-intl php8.5-bcmath php8.5-mbstring php8.5-gd php8.5-redis
+
+
+7. COMPOSER
+===========
+
+php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+php -r "if (hash_file('sha384', 'composer-setup.php') === 'c8b085408188070d5f52bcfe4ecfbee5f727afa458b2573b8eaaf77b3419b0bf2768dc67c86944da1544f06fa544fd47') { echo 'Installer verified'.PHP_EOL; } else { echo 'Installer corrupt'.PHP_EOL; unlink('composer-setup.php'); exit(1); }"
+php composer-setup.php
+php -r "unlink('composer-setup.php');"
+
+sudo mv composer.phar /usr/local/bin/composer
+
+composer --version
+
+
+8. REDIS
+========
+
+sudo apt install -y redis-server
+
+sudo cp /etc/redis/redis.conf /etc/redis/redis.conf.bak
+
+sudo cp /etc/redis/redis.conf /etc/redis/redis.conf.bak
+
+sudo tee -a /etc/redis/redis.conf > /dev/null << 'EOF'
+bind 127.0.0.1 -::1
+port 6379
+supervised systemd
+maxmemory 2gb
+maxmemory-policy allkeys-lru
+EOF
+
+sudo systemctl enable --now redis-server
+
+sudo systemctl restart redis-server
+
+
+9. CREAR PROYECTO LARAVEL
+=========================
+
+mkdir -p /var/www
+
+sudo chown -R laravel:laravel /var/www
+sudo chmod -R 775 /var/www
+
+composer create-project laravel/laravel laravel
+
+sudo chown -R laravel:laravel /var/www/laravel
+
+sudo chmod -R ug+rwX /var/www/laravel/storage /var/www/laravel/bootstrap/cache
+
+
+10. CONFIGURAR .env
+===================
+
+sudo tee /var/www/laravel/.env > /dev/null << 'EOF'
+APP_NAME=Laravel
+APP_ENV=production
+APP_KEY=
+APP_DEBUG=true
+APP_URL=http://192.168.1.10
+
+APP_LOCALE=es
+APP_FALLBACK_LOCALE=es
+APP_FAKER_LOCALE=es_ES
+
+APP_MAINTENANCE_DRIVER=file
+# APP_MAINTENANCE_STORE=database
+
+# PHP_CLI_SERVER_WORKERS=4
+
+BCRYPT_ROUNDS=12
+
+LOG_CHANNEL=stack
+LOG_STACK=single
+LOG_DEPRECATIONS_CHANNEL=null
+LOG_LEVEL=debug
+
+DB_CONNECTION=pgsql
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_DATABASE=laravel
+DB_USERNAME=laravel
+DB_PASSWORD=laravel
+
+SESSION_DRIVER=redis
+SESSION_LIFETIME=120
+SESSION_ENCRYPT=false
+SESSION_PATH=/
+SESSION_DOMAIN=null
+
+BROADCAST_CONNECTION=log
+FILESYSTEM_DISK=local
+QUEUE_CONNECTION=redis
+
+CACHE_STORE=redis
+# CACHE_PREFIX=
+
+MEMCACHED_HOST=127.0.0.1
+
+REDIS_CLIENT=phpredis
+REDIS_HOST=127.0.0.1
+REDIS_PASSWORD=null
+REDIS_PORT=6379
+
+MAIL_MAILER=log
+MAIL_SCHEME=null
+MAIL_HOST=127.0.0.1
+MAIL_PORT=2525
+MAIL_USERNAME=null
+MAIL_PASSWORD=null
+MAIL_FROM_ADDRESS="hello@example.com"
+MAIL_FROM_NAME="${APP_NAME}"
+
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_DEFAULT_REGION=us-east-1
+AWS_BUCKET=
+AWS_USE_PATH_STYLE_ENDPOINT=false
+
+VITE_APP_NAME="${APP_NAME}"
+OCTANE_SERVER=frankenphp
+EOF
+
+php artisan key:generate
+
+
+11. LARAVEL OCTANE CON FRANKENPHP
+=================================
+
+composer require laravel/octane
+
+php artisan octane:install --server=frankenphp
+
+sudo tee /etc/systemd/system/octane.service > /dev/null << 'EOF'
+[Unit]
+Description=Laravel Octane Server (FrankenPHP)
+After=network.target postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=laravel
+Group=laravel
+WorkingDirectory=/var/www/laravel
+ExecStart=/usr/bin/php artisan octane:start --server=frankenphp --host=127.0.0.1 --port=8000 --workers=6 --max-requests=1500
+Restart=always
+RestartSec=5
+Environment=APP_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+
+sudo systemctl restart octane
+
+sudo systemctl enable --now octane
+
+
+12. NGINX COMO PROXY A OCTANE
+=============================
+
+sudo apt install -y nginx
+
+sudo tee /etc/nginx/sites-available/laravel > /dev/null << 'EOF'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    client_max_body_size 64m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+}
+EOF
+
+sudo rm -f /etc/nginx/sites-enabled/default
+
+sudo ln -sf /etc/nginx/sites-available/laravel /etc/nginx/sites-enabled/laravel
+
+sudo nginx -t
+
+sudo systemctl enable --now nginx
+
+sudo systemctl restart nginx
+
+
+14. ARRANQUE FINAL
+==================
+
+sudo -u laravel env HOME=/home/laravel COMPOSER_HOME=/home/laravel/.composer bash -lc "cd /var/www/laravel && php artisan optimize:clear"
+
+sudo -u laravel env HOME=/home/laravel COMPOSER_HOME=/home/laravel/.composer bash -lc "cd /var/www/laravel && php artisan config:cache"
+
+sudo -u laravel env HOME=/home/laravel COMPOSER_HOME=/home/laravel/.composer bash -lc "cd /var/www/laravel && php artisan route:cache"
+
+
+15. COMPROBACIONES RAPIDAS
+==========================
+
+sudo systemctl is-active postgresql
+
+sudo systemctl is-active redis-server
+
+sudo systemctl is-active octane
+
+sudo systemctl is-active nginx
