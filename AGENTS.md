@@ -88,10 +88,19 @@ Automatizacion inicial de Google AdSense. Sigue en desarrollo.
 
 Los scripts de estas carpetas no forman parte del flujo principal actual:
 
-- `seguridad/`: WAF, hardening, 2FA y scripts relacionados.
+- `seguridad/secure.sh`: contiene directamente los perfiles `develop` y `production`; no depende de otros scripts de seguridad.
+- `seguridad/waf.sh`: instala ModSecurity/OWASP CRS; usa `develop` para detectar sin bloquear y `production` para bloquear.
+- `seguridad/2fa.sh`: activa o desactiva TOTP para SSH despues de verificar el acceso mediante clave publica.
 - `backup/`: instalacion, ejecucion, verificacion y restauracion de backups.
 
 No conectarlos a `lsetup.sh` hasta que el usuario pida recuperar seguridad/backups.
+
+Orden previsto:
+
+```text
+lsetup.sh -> componentes de aplicacion -> seguridad/secure.sh develop -> waf.sh develop
+aplicacion terminada y verificada -> secure.sh production -> waf.sh production -> 2fa.sh --on
+```
 
 ## 6. Convenciones de Bash
 
