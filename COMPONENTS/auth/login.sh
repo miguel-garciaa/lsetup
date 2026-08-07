@@ -1,55 +1,35 @@
 #!/bin/bash
 set -e
 
+# Configuracion: rellena estas variables antes de ejecutar el script.
+PROYECTO_DIR="/var/www/laravel"
+LARAVEL_USER="laravel"
+LARAVEL_HOME="/home/laravel"
+
+APP_URL="https://syslab.win"
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+GOOGLE_REDIRECT_URI="${APP_URL}/auth/google/callback"
+
 echo "=========================================================================="
 echo "    LOGIN + GOOGLE OAUTH    "
 echo "=========================================================================="
 
-# ------------------------------------------------------------------------------
-# 1. DETECCIÓN DE RUTA DEL PROYECTO LARAVEL
-# ------------------------------------------------------------------------------
-DEFAULT_DIR="/var/www/laravel1"
-if [ -f "./.env" ]; then
-  DEFAULT_DIR="$(pwd)"
+if [ ! -d "$PROYECTO_DIR" ] || [ ! -f "$PROYECTO_DIR/.env" ]; then
+  echo "[ERROR] No se encontro un proyecto Laravel con archivo .env en $PROYECTO_DIR"
+  exit 1
 fi
 
-read -p "Ruta del proyecto Laravel [$DEFAULT_DIR]: " PROYECTO_DIR
-PROYECTO_DIR=${PROYECTO_DIR:-$DEFAULT_DIR}
-
-if [ ! -d "$PROYECTO_DIR" ] || [ ! -f "$PROYECTO_DIR/.env" ]; then
-  echo "[ERROR] Error: No se encontró un proyecto Laravel con archivo .env en $PROYECTO_DIR"
+if [ -z "$GOOGLE_CLIENT_ID" ] || [ -z "$GOOGLE_CLIENT_SECRET" ]; then
+  echo "[ERROR] Rellena GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET al principio del script."
   exit 1
 fi
 
 cd "$PROYECTO_DIR"
 
-# Composer/artisan NUNCA como root: mismo patrón que setup.sh (as_laravel).
-LARAVEL_USER="laravel"
-LARAVEL_HOME="$(getent passwd "$LARAVEL_USER" | cut -d: -f6)"
-if [ -z "$LARAVEL_HOME" ] || [ ! -d "$LARAVEL_HOME" ]; then
-  echo "[ERROR] No se encontro un HOME valido para el usuario $LARAVEL_USER."
-  exit 1
-fi
 as_laravel() {
-  sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" bash -lc "cd '$PROYECTO_DIR' && $*"
+  sudo -u "$LARAVEL_USER" env HOME="$LARAVEL_HOME" COMPOSER_HOME="$LARAVEL_HOME/.composer" bash -c "cd '$PROYECTO_DIR' && $*"
 }
-
-# ------------------------------------------------------------------------------
-# 2. CAPTURA DE VARIABLES INTERACTIVAS
-# ------------------------------------------------------------------------------
-echo "--------------------------------------------------------------------------"
-echo " CONFIGURACIÓN DE PARÁMETROS DE GOOGLE"
-echo "--------------------------------------------------------------------------"
-
-read -p "Dominio / APP_URL [https://syslab.win]: " APP_URL
-APP_URL=${APP_URL:-https://syslab.win}
-
-read -p "Introduce tu GOOGLE_CLIENT_ID: " GOOGLE_CLIENT_ID
-read -p "Introduce tu GOOGLE_CLIENT_SECRET: " GOOGLE_CLIENT_SECRET
-
-DEFAULT_REDIRECT="${APP_URL}/auth/google/callback"
-read -p "GOOGLE_REDIRECT_URI [$DEFAULT_REDIRECT]: " GOOGLE_REDIRECT_URI
-GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-$DEFAULT_REDIRECT}
 
 # ------------------------------------------------------------------------------
 # 3. ACTUALIZAR ARCHIVO .ENV
@@ -100,7 +80,8 @@ echo " [3/9] Verificando paquetes y config/services.php..."
 # Verificar directamente en composer.json si ya está instalado para no ejecutar composer innecesariamente
 if ! grep -q "laravel/socialite" composer.json; then
   echo " Instalando laravel/socialite..."
-  as_laravel "COMPOSER_MEMORY_LIMIT=-1 composer require laravel/socialite --no-interaction --quiet"
+  as_laravel "COMPOSER_MEMORY_LIMIT=-1 composer require laravel/socialite --prefer-dist --no-scripts --no-interaction --quiet"
+  as_laravel "php artisan package:discover --ansi"
 else
   echo "[OK] laravel/socialite ya se encuentra instalado."
 fi

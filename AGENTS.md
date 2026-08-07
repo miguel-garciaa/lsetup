@@ -4,14 +4,14 @@
 
 - **Objetivo actual:** LSETUP vuelve temporalmente a ser un instalador Bash para desarrollo. El punto de entrada es `lsetup.sh`, que ejecuta `scripts/setup.sh` y despues `scripts/dominio.sh`.
 - **Sin binario Go por ahora:** no crear, compilar ni distribuir `lsetup.exe` o binarios Go salvo que el usuario lo pida explicitamente en el futuro.
-- **Stack objetivo:** AlmaLinux/RHEL 10, Laravel 13, PHP 8.5, PostgreSQL 18, Redis 8, Octane con FrankenPHP, Nginx, systemd, SELinux y firewalld.
+- **Stack objetivo:** Ubuntu Server 26.04, Laravel 13, PHP 8.5, PostgreSQL 18, Redis 8, Octane con FrankenPHP, Nginx y systemd.
 - **Seguridad y backups:** WAF, hardening, 2FA, auditoria avanzada y backups quedan fuera del flujo principal de desarrollo. Los scripts pueden existir en `seguridad/` y `backup/`, pero no se ejecutan desde `lsetup.sh`.
 - **Skills del repo:** antes de tocar scripts Bash, Laravel, DB/Redis o seguridad, cargar la skill local correspondiente desde `skills/`. Para Bash usar `skills/bash-scripting/SKILL.md`.
 - **Validacion:** no hay CI. Verificar los scripts modificados con `bash -n <script>.sh` en un entorno con Bash real. En Windows se puede intentar si hay Bash disponible; si no, indicarlo.
 
 ## 2. Flujo Principal
 
-`lsetup.sh` es el instalador principal para AlmaLinux:
+`lsetup.sh` es el instalador principal para Ubuntu Server 26.04:
 
 1. Ejecuta `scripts/setup.sh`.
 2. Conserva `PROYECTO_DIR` calculado por el setup.
@@ -23,7 +23,7 @@ Uso previsto en servidor:
 sudo bash lsetup.sh
 ```
 
-El script requiere root porque instala paquetes, escribe en `/etc`, configura systemd, Nginx, SELinux y certificados.
+El script requiere root porque instala paquetes, escribe en `/etc` y configura systemd, Nginx y certificados.
 
 ## 3. Scripts Base
 
@@ -31,9 +31,9 @@ El script requiere root porque instala paquetes, escribe en `/etc`, configura sy
 
 Instalador base del servidor y del proyecto Laravel.
 
-- Pide nombre de proyecto, base de datos, usuario y password PostgreSQL.
-- Instala y configura repositorios, PostgreSQL 18, Redis 8, PHP 8.5, Composer, Laravel 13, Octane/FrankenPHP, Nginx y SELinux.
-- Crea el proyecto en `/var/www/<proyecto>`.
+- Las variables del proyecto y de los servicios se configuran al principio del script.
+- Instala PostgreSQL 18, Redis 8, PHP 8.5, Composer, Laravel 13, Octane/FrankenPHP y Nginx.
+- Crea el proyecto en `/var/www/laravel` por defecto.
 - Genera `.env`, configura Octane en `127.0.0.1:8000` y deja Nginx como reverse proxy.
 - No debe instalar Filament, Shield, WAF, hardening avanzado, 2FA ni backups.
 
@@ -51,9 +51,9 @@ Configura dominio y certificado Origin de Cloudflare.
 
 ## 4. Componentes Post-Deploy
 
-Despues de `sudo bash lsetup.sh`, el proyecto Laravel queda desplegado y sirviendo, pero la web puede seguir vacia. `components/` contiene scripts independientes para montar funcionalidades segun el cliente.
+Despues de `sudo bash lsetup.sh`, el proyecto Laravel queda desplegado y sirviendo, pero la web puede seguir vacia. `COMPONENTS/` contiene scripts independientes para montar funcionalidades segun el cliente.
 
-### `components/panel-install.sh`
+### `COMPONENTS/panel-install.sh`
 
 Instala la base limpia de Filament 5 tras el setup.
 
@@ -62,7 +62,7 @@ Instala la base limpia de Filament 5 tras el setup.
 - No instala Shield, roles, permisos, Debugbar ni modulos de negocio.
 - Hasta instalar Shield, el acceso al panel se restringe al correo del administrador inicial.
 
-### `components/panel-shield.sh`
+### `COMPONENTS/panel-shield.sh`
 
 Modulo posterior para roles y permisos.
 
@@ -71,11 +71,16 @@ Modulo posterior para roles y permisos.
 - Debe instalar Shield/Spatie Permission sin reinstalar Filament ni recrear el panel base.
 - Debe dejar `Consultor` como rol de solo lectura cuando se implemente.
 
-### `components/auth/login.sh`
+### `COMPONENTS/auth/login.sh`
 
-Automatizacion de login Laravel y Google OAuth. Sigue en desarrollo.
+Automatizacion de login Laravel y Google OAuth.
 
-### `components/google-ads.sh`
+- Usa `/var/www/laravel`, el usuario `laravel` y el HOME `/home/laravel` por defecto.
+- `APP_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` y `GOOGLE_REDIRECT_URI` se configuran como variables al principio del script.
+- No debe pedir interactivamente la ruta ni las credenciales.
+- Las credenciales reales se rellenan en la copia del servidor y no deben subirse a Git.
+
+### `COMPONENTS/google-ads.sh`
 
 Automatizacion inicial de Google AdSense. Sigue en desarrollo.
 
@@ -92,7 +97,7 @@ No conectarlos a `lsetup.sh` hasta que el usuario pida recuperar seguridad/backu
 
 - Usar `#!/bin/bash` y `set -e` por defecto.
 - Scripts que escriben en `/etc`, systemd, Nginx o firewall deben validar root con `EUID`.
-- En AlmaLinux/RHEL usar `dnf`, `systemctl`, `firewall-cmd`, `restorecon`, `semanage`. No usar `apt`.
+- En Ubuntu Server usar `apt` y `systemctl`. No usar `dnf`.
 - Composer y Artisan deben ejecutarse como usuario `laravel`, con `HOME=/home/laravel` y `COMPOSER_HOME=/home/laravel/.composer`.
 - Evitar `sed` para modificar PHP. Usar `php -r` o heredocs PHP.
 - Para `.env`, preferir `awk` o `grep -v` + `printf`.

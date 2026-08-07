@@ -5,7 +5,8 @@ set -e
 
 cd /var/www/laravel
 
-sudo -u laravel env HOME=/home/laravel COMPOSER_HOME=/home/laravel/.composer composer dump-autoload --optimize --no-interaction
+sudo -u laravel env HOME=/home/laravel COMPOSER_HOME=/home/laravel/.composer composer dump-autoload --optimize --no-scripts --no-interaction
+sudo -u laravel env HOME=/home/laravel COMPOSER_HOME=/home/laravel/.composer php artisan package:discover --ansi
 
 sudo -u laravel env HOME=/home/laravel COMPOSER_HOME=/home/laravel/.composer php artisan optimize:clear
 sudo -u laravel env HOME=/home/laravel COMPOSER_HOME=/home/laravel/.composer APP_ENV=production php artisan config:cache

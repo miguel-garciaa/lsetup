@@ -58,7 +58,7 @@ as_laravel() {
     runuser -u "$LARAVEL_USER" -- env \
         HOME="$LARAVEL_HOME" \
         COMPOSER_HOME="$LARAVEL_HOME/.composer" \
-        bash -lc "$1"
+        bash -c "cd '$LARAVEL_HOME' && $1"
 }
 
 set_env_var() {
@@ -142,8 +142,14 @@ systemctl restart redis-server
 
 echo "[6/10] Creando Laravel 13..."
 if [ ! -f "$PROYECTO_DIR/artisan" ]; then
+    if [ -d "$PROYECTO_DIR" ] && [ -n "$(find "$PROYECTO_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        PROYECTO_INCOMPLETO="${PROYECTO_DIR}.incompleto-$(date +%Y%m%d-%H%M%S)"
+        mv "$PROYECTO_DIR" "$PROYECTO_INCOMPLETO"
+        echo "Instalacion anterior guardada en: $PROYECTO_INCOMPLETO"
+    fi
+
     install -d -o "$LARAVEL_USER" -g "$LARAVEL_USER" -m 755 "$PROYECTO_DIR"
-    as_laravel "composer create-project laravel/laravel:^13.0 '$PROYECTO_DIR' --prefer-dist --no-interaction"
+    as_laravel "composer create-project 'laravel/laravel:^13.0' '$PROYECTO_DIR' --prefer-dist --no-interaction --no-progress"
 fi
 chown -R "$LARAVEL_USER:$LARAVEL_USER" "$PROYECTO_DIR"
 chmod -R ug+rwX "$PROYECTO_DIR/storage" "$PROYECTO_DIR/bootstrap/cache"
@@ -177,33 +183,7 @@ set_env_var "OCTANE_SERVER" "frankenphp" "$PROYECTO_DIR/.env"
 as_laravel "cd '$PROYECTO_DIR' && php artisan key:generate --force --no-interaction"
 as_laravel "cd '$PROYECTO_DIR' && php artisan migrate --force --no-interaction"
 
-echo "[8/10] Instalando Octane con FrankenPHP y compilando assets..."
-as_laravel "cd '$PROYECTO_DIR' && composer require laravel/octane --no-interaction --no-progress"
-as_laravel "cd '$PROYECTO_DIR' && php artisan octane:install --server=frankenphp --no-interaction"
-as_laravel "cd '$PROYECTO_DIR' && npm install && npm run build"
-
-echo "[9/10] Creando el servicio Octane y el proxy Nginx..."
-cat > /etc/systemd/system/octane.service <<EOF
-[Unit]
-Description=Laravel Octane Server (FrankenPHP)
-After=network.target postgresql.service redis-server.service
-
-[Service]
-Type=simple
-User=$LARAVEL_USER
-Group=$LARAVEL_USER
-WorkingDirectory=$PROYECTO_DIR
-ExecStart=/usr/bin/php artisan octane:start --server=frankenphp --host=$OCTANE_HOST --port=$OCTANE_PORT --workers=$OCTANE_WORKERS --max-requests=$OCTANE_MAX_REQUESTS
-Restart=always
-RestartSec=5
-Environment=APP_ENV=$APP_ENV
-Environment=HOME=$LARAVEL_HOME
-Environment=COMPOSER_HOME=$LARAVEL_HOME/.composer
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
+echo "[8/10] Configurando el proxy Nginx..."
 cat > /etc/nginx/sites-available/laravel <<'EOF'
 server {
     listen 80 default_server;
@@ -230,8 +210,37 @@ EOF
 rm -f /etc/nginx/sites-enabled/default
 ln -sfn /etc/nginx/sites-available/laravel /etc/nginx/sites-enabled/laravel
 nginx -t
-systemctl daemon-reload
 systemctl enable --now nginx
+systemctl reload nginx
+
+echo "[9/10] Instalando Octane con FrankenPHP y compilando assets..."
+as_laravel "cd '$PROYECTO_DIR' && composer require laravel/octane --prefer-dist --no-scripts --no-interaction --no-progress"
+as_laravel "cd '$PROYECTO_DIR' && php artisan package:discover --ansi"
+as_laravel "cd '$PROYECTO_DIR' && php artisan octane:install --server=frankenphp --no-interaction"
+as_laravel "cd '$PROYECTO_DIR' && npm install && npm run build"
+
+cat > /etc/systemd/system/octane.service <<EOF
+[Unit]
+Description=Laravel Octane Server (FrankenPHP)
+After=network.target postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=$LARAVEL_USER
+Group=$LARAVEL_USER
+WorkingDirectory=$PROYECTO_DIR
+ExecStart=/usr/bin/php artisan octane:start --server=frankenphp --host=$OCTANE_HOST --port=$OCTANE_PORT --workers=$OCTANE_WORKERS --max-requests=$OCTANE_MAX_REQUESTS
+Restart=always
+RestartSec=5
+Environment=APP_ENV=$APP_ENV
+Environment=HOME=$LARAVEL_HOME
+Environment=COMPOSER_HOME=$LARAVEL_HOME/.composer
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
 
 echo "[10/10] Generando caches y arrancando servicios..."
 as_laravel "cd '$PROYECTO_DIR' && php artisan optimize:clear"
