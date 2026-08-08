@@ -7,7 +7,7 @@
 # Doble confirmación (typear "RESTORE") antes de aplicar.
 # ==============================================================================
 
-set -uo pipefail  # NO -e: si un paso falla, reportar y parar man cleaner.
+set -uo pipefail  # NO -e: si un paso falla, reportar y parar
 
 if [ "$EUID" -ne 0 ]; then
   echo "[WARN]  Ejecuta como root o con sudo."
@@ -155,22 +155,22 @@ if [ "$RESTORE_DB" = "1" ]; then
 
   # Creds DB actuales de .env (puede que el user/pass cambie respecto snapshot).
   read_env() {
-      awk -F= -v k="$1" '
-          {
-              key = $1;
-              sub(/^[ \t]+/, "", key);
-              sub(/[ \t]+$/, "", key);
-              if (key == k && NF >= 2) {
-                  val = substr($0, index($0, "=") + 1);
-                  sub(/^[ \t]+/, "", val);
-                  sub(/[ \t]+$/, "", val);
-                  sub(/^["'\'']/, "", val);
-                  sub(/["'\'']$/, "", val);
-                  print val;
-                  exit;
-              }
-          }
-      ' "$LARAVEL_DIR/.env"
+        awk -F= -v k="$1" '
+            {
+                key = $1;
+                sub(/^[ \t]+/, "", key);
+                sub(/[ \t]+$/, "", key);
+                if (key == k && NF >= 2) {
+                    val = substr($0, index($0, "=") + 1);
+                    sub(/^[ \t]+/, "", val);
+                    sub(/[ \t]+$/, "", val);
+                    sub(/^["'\'']/, "", val);
+                    sub(/["'\'']$/, "", val);
+                    print val;
+                    exit;
+                }
+            }
+        ' "$LARAVEL_DIR/.env"
   }
   if [ -n "$LARAVEL_DIR" ] && [ -f "$LARAVEL_DIR/.env" ]; then
       DB_NAME=$(read_env DB_DATABASE)

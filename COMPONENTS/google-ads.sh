@@ -1,7 +1,7 @@
 #!/bin/bash
 
 COMPONENT_DIR="resources/views/components"
-COMPONENT_FILE="$COMPONENT_DIR/app-layout.blade.php"
+COMPONENT_FILE="$COMPONENT_DIR/google-layout.blade.php"
 
 # Crear directorio de componentes si no existe
 if [ ! -d "$COMPONENT_DIR" ]; then

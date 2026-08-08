@@ -1,37 +1,87 @@
-COMANDOS MANUALES DEL SETUP - UBUNTU SERVER 26.04
-=================================================
+UBUNTU SERVER 26.04
+===================
 
 1. ACTUALIZAR SISTEMA Y PAQUETES BASE
 =====================================
 
 sudo apt update && sudo apt upgrade -y
 
-sudo apt install -y curl tar git htop nano
+sudo apt install -y curl tar git htop nano nodejs npm
 
 2. FIREWALL UFW
-=================================================
+===============
 
 sudo apt install ufw
 
 sudo sed -i 's/IPV6=yes/IPV6=no/' /etc/default/ufw
-sudo ufw reset
+sudo ufw --force reset
 
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
-sudo ufw allow 22/tcp
+
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
-sudo ufw allow 5432/tcp
-sudo ufw allow 6379/tcp
 
-sudo ufw enable
-sudo ufw status
+sudo ufw allow from 192.168.1.2 to any port 4040 proto tcp
+sudo ufw allow from 207.66.60.6 to any port 4040 proto tcp
+
+sudo systemctl enable --now ufw
+sudo ufw --force enable
+
+3. OPENSSH-SERVER
+=================
+
+sudo tee /etc/ssh/sshd_config.d/99-hardened-ssh.conf > /dev/null << 'EOF'
+Port 4040
+
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+
+PermitRootLogin no
+X11Forwarding no
+MaxAuthTries 3
+EOF
+
+sudo sed -i 's/^Port 22/#Port 22/' /etc/ssh/sshd_config
+
+if sudo sshd -t; then
+    echo "Sintaxis de SSH válida. Reiniciando servicio..."
+    sudo systemctl restart ssh || sudo systemctl restart sshd
+else
+    echo "ERROR: La configuración de SSH contiene errores. No se ha cambiado el puerto."
+    exit 1
+fi
 
 
-3. NODE.JS 24
-=============
+4. FAIL2BAN
+===========
 
-sudo apt install -y nodejs npm
+sudo apt install -y fail2ban
+
+MI_IP_PUBLICA=$(curl -s https://ifconfig.me)
+
+sudo tee /etc/fail2ban/jail.local > /dev/null << EOF
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1 192.168.1.0/24 ${MI_IP_PUBLICA}
+
+bantime  = 1h
+findtime = 10m
+maxretry = 3
+banaction = ufw
+
+[sshd]
+enabled  = true
+port     = ssh
+backend  = systemd
+maxretry = 3
+findtime = 10m
+bantime  = 2h
+EOF
+
+sudo systemctl enable --now fail2ban
+sudo systemctl status fail2ban --no-pager
 
 
 5. POSTGRESQL 18
@@ -42,18 +92,15 @@ sudo apt install -y postgresql-18 postgresql-client-18
 sudo systemctl enable --now postgresql
 
 sudo -u postgres psql -c "CREATE USER laravel WITH PASSWORD 'laravel';"
-
 sudo -u postgres psql -c "CREATE DATABASE laravel OWNER laravel;"
-
 sudo -u postgres psql -c "ALTER USER laravel WITH PASSWORD 'laravel';"
-
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE laravel TO laravel;"
 
 
-sudo sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/g" /etc/postgresql/18/main/postgresql.conf
-sudo sed -i "s/listen_addresses = 'localhost'/listen_addresses = '*'/g" /etc/postgresql/18/main/postgresql.conf
+sudo sed -i "s/#listen_addresses = 'localhost'/listen_addresses = 'localhost'/g" /etc/postgresql/18/main/postgresql.conf
+sudo sed -i "s/listen_addresses = 'localhost'/listen_addresses = 'localhost'/g" /etc/postgresql/18/main/postgresql.conf
 
-sudo sed -i '$ a\host    all             all             192.168.1.0\/24          scram-sha-256' /etc/postgresql/18/main/pg_hba.conf
+sudo sed -i '$ a\host    all             all             127.0.0.1\/32          scram-sha-256' /etc/postgresql/18/main/pg_hba.conf
 
 sudo systemctl restart postgresql
 
@@ -191,6 +238,8 @@ php artisan key:generate
 
 11. LARAVEL OCTANE CON FRANKENPHP
 =================================
+
+cd /var/www/laravel 
 
 composer require laravel/octane
 
