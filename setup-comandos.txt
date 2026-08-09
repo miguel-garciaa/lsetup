@@ -1,6 +1,21 @@
 UBUNTU SERVER 26.04
 ===================
 
+USUARIO="laravel"
+PASSWORD="laravel"
+
+if id "$USUARIO" &>/dev/null; then
+    echo "El usuario '$USUARIO' ya existe. No se realizarán cambios."
+else
+    echo "Creando el usuario '$USUARIO'..."
+
+    sudo useradd -m -s /bin/bash "$USUARIO"
+    echo "$USUARIO:$PASSWORD" | sudo chpasswd    
+    sudo usermod -aG sudo "$USUARIO"
+    
+    echo "Usuario '$USUARIO' creado correctamente."
+fi
+
 1. ACTUALIZAR SISTEMA Y PAQUETES BASE
 =====================================
 
