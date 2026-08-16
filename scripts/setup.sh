@@ -2,7 +2,7 @@
 
 USUARIO="laravel"
 PASSWORD="laravel"
-PROYECTO_DIR="/var/www/laravel"
+PROYECTO_DIR="/var/www/mecanico"
 
 if id "$USUARIO" &>/dev/null; then
     echo "El usuario '$USUARIO' ya existe. No se realizarán cambios."
@@ -278,6 +278,59 @@ sudo systemctl daemon-reload
 sudo systemctl restart octane
 sudo systemctl enable --now octane
 
+sudo tee /etc/systemd/system/laravel-queue.service > /dev/null << EOF
+[Unit]
+Description=Laravel Queue Worker
+After=network.target postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=laravel
+Group=laravel
+WorkingDirectory=$PROYECTO_DIR
+ExecStart=/usr/bin/php artisan queue:work redis --queue=emails,default --sleep=1 --tries=3 --timeout=90
+ExecReload=/usr/bin/php artisan queue:restart
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=100
+Environment=APP_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee /etc/systemd/system/laravel-scheduler.service > /dev/null << EOF
+[Unit]
+Description=Laravel Scheduler
+After=network.target postgresql.service redis-server.service
+
+[Service]
+Type=oneshot
+User=laravel
+Group=laravel
+WorkingDirectory=$PROYECTO_DIR
+ExecStart=/usr/bin/php artisan schedule:run
+Environment=APP_ENV=production
+EOF
+
+sudo tee /etc/systemd/system/laravel-scheduler.timer > /dev/null << 'EOF'
+[Unit]
+Description=Run Laravel Scheduler every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now laravel-queue
+sudo systemctl enable --now laravel-scheduler.timer
+
 
 # 12. NGINX COMO PROXY A OCTANE
 # =============================
@@ -328,4 +381,6 @@ sudo -u laravel env HOME=/home/laravel COMPOSER_HOME=/home/laravel/.composer bas
 sudo systemctl is-active postgresql
 sudo systemctl is-active redis-server
 sudo systemctl is-active octane
+sudo systemctl is-active laravel-queue
+sudo systemctl is-active laravel-scheduler.timer
 sudo systemctl is-active nginx

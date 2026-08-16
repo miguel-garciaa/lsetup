@@ -7,7 +7,10 @@ set -e
 # ==============================================================================
 
 DOMAIN_NAME="syslab.win"
-PROYECTO_DIR="/var/www/laravel"
+PROYECTO_DIR="${PROYECTO_DIR:-/var/www/peluqueria}"
+if [ ! -f "$PROYECTO_DIR/artisan" ] && [ -f /var/www/laravel/artisan ]; then
+    PROYECTO_DIR="/var/www/laravel"
+fi
 LARAVEL_USER="laravel"
 
 CLOUDFLARE_CERT="-----BEGIN CERTIFICATE-----
@@ -204,8 +207,9 @@ ln -sfn "$NGINX_SITE" "$NGINX_ENABLED"
 nginx -t
 systemctl reload nginx
 
-echo "[3/5] Actualizando APP_URL y proxies de Laravel..."
+echo "[3/5] Actualizando APP_URL, Web Push y proxies de Laravel..."
 set_env_var "APP_URL" "https://${DOMAIN_NAME}" "$PROYECTO_DIR/.env"
+set_env_var "VAPID_SUBJECT" "https://${DOMAIN_NAME}" "$PROYECTO_DIR/.env"
 
 TRUST_PATCH="$PROYECTO_DIR/.lsetup-trust-proxies.php"
 cat > "$TRUST_PATCH" <<'PHP'
